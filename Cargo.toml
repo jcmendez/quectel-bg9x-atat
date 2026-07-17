@@ -2,15 +2,17 @@
 name = "quectel-bg9x-atat"
 version = "0.1.0"
 edition = "2021"
-license = "MIT"
+license = "MIT OR Apache-2.0"
 description = "Async, no_std atat driver for Quectel BG9x (BG95/BG96) cellular modems"
+repository = "https://github.com/jcmendez/quectel-bg9x-atat"
+readme = "README.md"
 keywords = ["quectel", "bg95", "modem", "cellular", "atat"]
 categories = ["embedded", "no-std", "asynchronous"]
 
 [dependencies]
 atat = { version = "0.24.1", default-features = false, features = ["derive", "bytes"] }
 embassy-time = "0.5"
-defmt = { version = "1", optional = true }
+defmt = { version = "0.3", optional = true }
 
 [features]
 default = []

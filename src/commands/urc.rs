@@ -5,7 +5,10 @@
 
 use atat::atat_derive::AtatUrc;
 
-use super::responses::CmeError;
+use super::responses::{
+    CmeError, MqttCloseResponse, MqttConnectResponse, MqttDisconnectResponse, MqttOpenResponse,
+    MqttPublishResponse, MqttStatusResponse,
+};
 
 #[derive(Clone, AtatUrc, Debug)]
 pub enum Urc {
@@ -22,4 +25,22 @@ pub enum Urc {
     /// response to `AT+CPIN?` when no SIM is inserted.
     #[at_urc("+CME ERROR")]
     CmeError(CmeError),
+    /// Result of opening the MQTT network socket (`MqttOpen` command).
+    #[at_urc("+QMTOPEN")]
+    MqttOpen(MqttOpenResponse),
+    /// Asynchronous MQTT connection status change (socket closed).
+    #[at_urc("+QMTSTAT")]
+    MqttStatus(MqttStatusResponse),
+    /// Result of the MQTT CONNECT handshake (`MqttConnect` command).
+    #[at_urc("+QMTCONN")]
+    MqttConnect(MqttConnectResponse),
+    /// Result of an MQTT publish (`MqttPublishExtended` command).
+    #[at_urc("+QMTPUB")]
+    MqttPublish(MqttPublishResponse),
+    /// Result of an MQTT DISCONNECT (`MqttDisconnect` command).
+    #[at_urc("+QMTDISC")]
+    MqttDisconnect(MqttDisconnectResponse),
+    /// Result of closing the MQTT network socket (`MqttClose` command).
+    #[at_urc("+QMTCLOSE")]
+    MqttClose(MqttCloseResponse),
 }

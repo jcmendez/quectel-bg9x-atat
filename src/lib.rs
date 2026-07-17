@@ -5,4 +5,4 @@ pub mod commands;
 pub mod driver;
 
 pub use commands::urc::Urc;
-pub use driver::{Bg9xModem, ModemError, RadioAccessTechnology};
+pub use driver::{Bg9xModem, ModemError, MqttModem, RadioAccessTechnology, SslConfig};

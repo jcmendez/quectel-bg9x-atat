@@ -1,5 +1,6 @@
-//! AT command definitions for the bring-up subset of the Quectel BG9x
-//! command set: identity, SIM/network status, and PDP context control.
+//! AT command definitions for the Quectel BG9x command set: identity,
+//! SIM/network status, PDP context control, MQTT, and SSL/TLS context
+//! configuration.
 //!
 //! Adapted from SC Robotics' `quectel-bg9x-eh-driver` (MIT) — see `/NOTICE.md`.
 //! Doc comments quoting AT command semantics are from Quectel's BG95&BG96 AT
@@ -137,4 +138,226 @@ pub struct DeactivatePDPContext {
 pub struct PowerDown {
     #[at_arg(position = 1)]
     pub mode: PowerDownMode,
+}
+
+// --- MQTT ---
+
+/// `AT+QMTCFG="version"` — sets the MQTT protocol version for a socket.
+#[derive(Clone, AtatCmd)]
+#[at_cmd("+QMTCFG", NoResponse, timeout_ms = 300)]
+pub struct ConfigureMqttVersion {
+    /// Literal `"version"`.
+    #[at_arg(position = 0)]
+    pub subcommand: String<16>,
+    #[at_arg(position = 1)]
+    pub tcp_connect_id: u8,
+    #[at_arg(position = 2)]
+    pub version: MqttVersion,
+}
+
+/// `AT+QMTCFG="ssl"` — enables/disables SSL for an MQTT socket and binds it
+/// to an SSL context configured via the `ConfigureSsl*` commands.
+#[derive(Clone, AtatCmd)]
+#[at_cmd("+QMTCFG", NoResponse, timeout_ms = 300)]
+pub struct ConfigureMqttSsl {
+    /// Literal `"ssl"`.
+    #[at_arg(position = 0)]
+    pub subcommand: String<16>,
+    #[at_arg(position = 1)]
+    pub tcp_connect_id: u8,
+    #[at_arg(position = 2)]
+    pub ssl_enable: MqttSslEnable,
+    /// SSL context ID, 0-5 — same ID used with the `ConfigureSsl*` commands.
+    #[at_arg(position = 3)]
+    pub ssl_ctx_id: u8,
+}
+
+/// `AT+QMTOPEN` — opens the network connection for an MQTT client. Success
+/// here only means the command was accepted; the actual result (including
+/// failures) arrives as a [`crate::commands::urc::Urc::MqttOpen`] URC, which
+/// can take up to ~75s.
+#[derive(Clone, AtatCmd)]
+#[at_cmd("+QMTOPEN", NoResponse, timeout_ms = 300)]
+pub struct MqttOpen {
+    #[at_arg(position = 1)]
+    pub tcp_connect_id: u8,
+    #[at_arg(position = 2)]
+    pub server: String<100>,
+    #[at_arg(position = 3)]
+    pub port: u16,
+}
+
+/// `AT+QMTCONN` — sends the MQTT CONNECT packet. Result arrives as a
+/// [`crate::commands::urc::Urc::MqttConnect`] URC.
+#[derive(Clone, AtatCmd)]
+#[at_cmd("+QMTCONN", NoResponse, timeout_ms = 5000)]
+pub struct MqttConnect {
+    #[at_arg(position = 1)]
+    pub tcp_connect_id: u8,
+    /// Max 23 bytes.
+    #[at_arg(position = 2)]
+    pub client_id: String<23>,
+    #[at_arg(position = 3)]
+    pub username: Option<String<64>>,
+    #[at_arg(position = 4)]
+    pub password: Option<String<64>>,
+}
+
+/// `AT+QMTPUBEX` — publishes with extended parameters (message ID, retain).
+/// Result arrives as a [`crate::commands::urc::Urc::MqttPublish`] URC.
+#[derive(Clone, AtatCmd)]
+#[at_cmd("+QMTPUBEX", NoResponse, timeout_ms = 300)]
+pub struct MqttPublishExtended {
+    #[at_arg(position = 1)]
+    pub tcp_connect_id: u8,
+    /// 0-65535. Required (can be 0) even for QoS 0.
+    #[at_arg(position = 2)]
+    pub msg_id: u16,
+    /// 0: at most once, 1: at least once, 2: exactly once.
+    #[at_arg(position = 3)]
+    pub qos: u8,
+    /// 0: don't retain, 1: retain.
+    #[at_arg(position = 4)]
+    pub retain: u8,
+    /// Max 128 bytes, UTF-8, no `+`/`#` wildcards.
+    #[at_arg(position = 5)]
+    pub topic: String<128>,
+    /// Max 1024 bytes, UTF-8, no NUL bytes.
+    #[at_arg(position = 6)]
+    pub payload: String<1024>,
+}
+
+/// `AT+QMTDISC` — sends the MQTT DISCONNECT packet. Result arrives as a
+/// [`crate::commands::urc::Urc::MqttDisconnect`] URC.
+#[derive(Clone, AtatCmd)]
+#[at_cmd("+QMTDISC", NoResponse, timeout_ms = 300)]
+pub struct MqttDisconnect {
+    #[at_arg(position = 1)]
+    pub tcp_connect_id: u8,
+}
+
+/// `AT+QMTCLOSE` — closes the MQTT network connection. Result arrives as a
+/// [`crate::commands::urc::Urc::MqttClose`] URC.
+#[derive(Clone, AtatCmd)]
+#[at_cmd("+QMTCLOSE", NoResponse, timeout_ms = 300)]
+pub struct MqttClose {
+    #[at_arg(position = 1)]
+    pub tcp_connect_id: u8,
+}
+
+// --- SSL/TLS context configuration ---
+//
+// All `AT+QSSLCFG` commands share the same shape: a literal subcommand
+// name, an SSL context ID (0-5), and one value. `context_id` is independent
+// of the PDP context ID used for `ConfigureContext`/`ActivatePDPContext`.
+
+/// `AT+QSSLCFG="sslversion"`.
+#[derive(Clone, AtatCmd)]
+#[at_cmd("+QSSLCFG", NoResponse, timeout_ms = 300)]
+pub struct ConfigureSslVersion {
+    #[at_arg(position = 0)]
+    pub subcommand: String<16>,
+    #[at_arg(position = 1)]
+    pub context_id: u8,
+    #[at_arg(position = 2)]
+    pub ssl_version: SslVersion,
+}
+
+/// `AT+QSSLCFG="ciphersuite"`. `cipher_suites` is a `"0xNNNN"` hex string —
+/// see [`SslCipherSuiteEnum::to_bytes`].
+#[derive(Clone, AtatCmd)]
+#[at_cmd("+QSSLCFG", NoResponse, timeout_ms = 300)]
+pub struct ConfigureSslCipherSuites {
+    #[at_arg(position = 0)]
+    pub subcommand: String<16>,
+    #[at_arg(position = 1)]
+    pub context_id: u8,
+    #[at_arg(position = 2)]
+    pub cipher_suites: SslCipherSuites,
+}
+
+/// `AT+QSSLCFG="cacert"` — path to a CA certificate already present in the
+/// module's UFS file system (this crate doesn't yet handle uploading files —
+/// see `NOTICE.md`/README for scope).
+#[derive(Clone, AtatCmd)]
+#[at_cmd("+QSSLCFG", NoResponse, timeout_ms = 300)]
+pub struct ConfigureSslCaCertificate {
+    #[at_arg(position = 0)]
+    pub subcommand: String<16>,
+    #[at_arg(position = 1)]
+    pub context_id: u8,
+    #[at_arg(position = 2)]
+    pub ca_cert_path: String<128>,
+}
+
+/// `AT+QSSLCFG="clientcert"` — path to a client certificate in UFS.
+#[derive(Clone, AtatCmd)]
+#[at_cmd("+QSSLCFG", NoResponse, timeout_ms = 300)]
+pub struct ConfigureSslClientCertificate {
+    #[at_arg(position = 0)]
+    pub subcommand: String<16>,
+    #[at_arg(position = 1)]
+    pub context_id: u8,
+    #[at_arg(position = 2)]
+    pub client_cert_path: String<128>,
+}
+
+/// `AT+QSSLCFG="clientkey"` — path to a client private key in UFS.
+#[derive(Clone, AtatCmd)]
+#[at_cmd("+QSSLCFG", NoResponse, timeout_ms = 300)]
+pub struct ConfigureSslClientPrivateKey {
+    #[at_arg(position = 0)]
+    pub subcommand: String<16>,
+    #[at_arg(position = 1)]
+    pub context_id: u8,
+    #[at_arg(position = 2)]
+    pub client_key_path: String<128>,
+}
+
+/// `AT+QSSLCFG="seclevel"`.
+#[derive(Clone, AtatCmd)]
+#[at_cmd("+QSSLCFG", NoResponse, timeout_ms = 300)]
+pub struct ConfigureSslSecurityLevel {
+    #[at_arg(position = 0)]
+    pub subcommand: String<16>,
+    #[at_arg(position = 1)]
+    pub context_id: u8,
+    #[at_arg(position = 2)]
+    pub security_level: SslAuthenticationMode,
+}
+
+/// `AT+QSSLCFG="ignorelocaltime"`.
+#[derive(Clone, AtatCmd)]
+#[at_cmd("+QSSLCFG", NoResponse, timeout_ms = 300)]
+pub struct ConfigureSslIgnoreLocalTime {
+    #[at_arg(position = 0)]
+    pub subcommand: String<16>,
+    #[at_arg(position = 1)]
+    pub context_id: u8,
+    #[at_arg(position = 2)]
+    pub ignore_local_time: SslIgnoreLocalTime,
+}
+
+/// `AT+QSSLCFG="sni"`.
+#[derive(Clone, AtatCmd)]
+#[at_cmd("+QSSLCFG", NoResponse, timeout_ms = 300)]
+pub struct ConfigureSslSni {
+    #[at_arg(position = 0)]
+    pub subcommand: String<16>,
+    #[at_arg(position = 1)]
+    pub context_id: u8,
+    #[at_arg(position = 2)]
+    pub sni_enable: SslSniEnable,
+}
+
+/// `AT+QSSLCFG="checkhost"`.
+#[derive(Clone, AtatCmd)]
+#[at_cmd("+QSSLCFG", NoResponse, timeout_ms = 300)]
+pub struct ConfigureSslCheckHost {
+    #[at_arg(position = 0)]
+    pub subcommand: String<16>,
+    #[at_arg(position = 1)]
+    pub context_id: u8,
+    #[at_arg(position = 2)]
+    pub checkhost_enable: SslCheckHostEnable,
 }

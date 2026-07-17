@@ -158,3 +158,81 @@ pub struct CmeError {
     #[at_arg(position = 1)]
     pub err: u8,
 }
+
+/// URC `+QMTOPEN: <tcpconnectID>,<result>` — result of opening the MQTT
+/// network socket.
+///
+/// result: -1 failed to open network, 0 opened successfully, 1 wrong
+/// parameter, 2 MQTT identifier occupied, 3 PDP activation failed, 4 domain
+/// name parse failed, 5 network disconnection error.
+#[derive(Clone, Debug, AtatResp)]
+pub struct MqttOpenResponse {
+    #[at_arg(position = 1)]
+    pub tcpconnect_id: u8,
+    #[at_arg(position = 2)]
+    pub result: i8,
+}
+
+/// URC `+QMTSTAT: <tcpconnectID>,<err>` — asynchronous MQTT connection
+/// status change (the socket was closed for some reason).
+#[derive(Clone, Debug, AtatResp)]
+pub struct MqttStatusResponse {
+    #[at_arg(position = 1)]
+    pub tcpconnect_id: u8,
+    #[at_arg(position = 2)]
+    pub err: u8,
+}
+
+/// URC `+QMTCONN: <tcpconnectID>,<result>[,<ret_code>]` — result of the
+/// MQTT CONNECT handshake.
+///
+/// result: 0 CONNECT packet sent, 1 retransmission, 2 failed to send.
+/// ret_code (only meaningful when result == 0): 0 accepted, 1 unacceptable
+/// protocol version, 2 identifier rejected, 3 server unavailable, 4 bad
+/// username/password, 5 not authorized.
+#[derive(Clone, Debug, AtatResp)]
+pub struct MqttConnectResponse {
+    #[at_arg(position = 1)]
+    pub tcpconnect_id: u8,
+    #[at_arg(position = 2)]
+    pub result: u8,
+    #[at_arg(position = 3)]
+    pub ret_code: u8,
+}
+
+/// URC `+QMTPUB: <tcpconnectID>,<messageID>,<result>[,<value>]` — result of
+/// an MQTT publish.
+///
+/// result: 0 sent, 1 retransmission (`value` = retransmit count), 2 failed
+/// to send.
+#[derive(Clone, Debug, AtatResp)]
+pub struct MqttPublishResponse {
+    #[at_arg(position = 1)]
+    pub tcpconnect_id: u8,
+    #[at_arg(position = 2)]
+    pub message_id: u16,
+    #[at_arg(position = 3)]
+    pub result: u8,
+    #[at_arg(position = 4)]
+    pub value: Option<u8>,
+}
+
+/// URC `+QMTDISC: <tcpconnectID>,<result>` — result of an MQTT DISCONNECT.
+/// result: -1 failed, 0 closed successfully.
+#[derive(Clone, Debug, AtatResp)]
+pub struct MqttDisconnectResponse {
+    #[at_arg(position = 1)]
+    pub tcpconnect_id: u8,
+    #[at_arg(position = 2)]
+    pub result: i8,
+}
+
+/// URC `+QMTCLOSE: <tcpconnectID>,<result>` — result of closing the MQTT
+/// network socket. result: -1 failed, 0 closed successfully.
+#[derive(Clone, Debug, AtatResp)]
+pub struct MqttCloseResponse {
+    #[at_arg(position = 1)]
+    pub tcpconnect_id: u8,
+    #[at_arg(position = 2)]
+    pub result: i8,
+}
