@@ -31,10 +31,17 @@ let mut modem = Bg9xModem::new(client);
 modem.wait_sim_ready(Duration::from_secs(10)).await?;
 let iccid = modem.get_iccid().await?;
 let rat = modem.network_attach(Duration::from_secs(60)).await?;
-modem.configure_context(1, "iot.sixfab.com", "", "", 0).await?;
+modem.configure_context(1, "your-apn", "", "", 0).await?;
 let ctx = modem.activate_context(1).await?;
 // ctx.ip_address is now Some(...)
 ```
+
+## Validated
+
+Exercised end-to-end on a Sixfab Pico LTE board (RP2040 + Quectel BG95-M3):
+SIM ready, ICCID/IMEI read, LTE-M (eMTC) registration, signal strength
+query, and PDP context activation with a real assigned IP against a live
+carrier SIM.
 
 ## Attribution
 
