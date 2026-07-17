@@ -346,8 +346,29 @@ impl<C: AtatClient> Bg9xModem<C> {
 
     /// Activates `context_id` and returns its state (including the assigned
     /// IP address, once up). Can take up to 150s on the network side.
+    ///
+    /// Idempotent: `AT+QIACT` on an already-active context is rejected by
+    /// the modem — e.g. when retrying after some later step (MQTT connect,
+    /// etc.) failed and left the context up. On a rejected activate, this
+    /// checks whether it's actually already active for `context_id` before
+    /// treating it as a real failure. (`AT+QIACT?` isn't probed up front,
+    /// since it may not report anything useful — not even a parseable
+    /// response — before any context has ever been activated.)
     pub async fn activate_context(&mut self, context_id: u8) -> Result<PDPContextInfo, ModemError> {
-        self.client.send(&ActivatePDPContext { context_id }).await?;
+        if self
+            .client
+            .send(&ActivatePDPContext { context_id })
+            .await
+            .is_err()
+        {
+            if let Ok(info) = self.client.send(&GetPDPContextInfo).await {
+                if info.context_id == context_id && info.context_state == 1 {
+                    return Ok(info);
+                }
+            }
+            return Err(ModemError::NoContext);
+        }
+
         let info = self.client.send(&GetPDPContextInfo).await?;
         if info.context_state != 1 {
             return Err(ModemError::NoContext);
@@ -590,8 +611,14 @@ impl<'sub, C: AtatClient, const URC_CAPACITY: usize, const URC_SUBSCRIBERS: usiz
         .await
     }
 
-    /// Disconnects the MQTT client (`+QMTDISC`) and closes the underlying
-    /// network socket (`+QMTCLOSE`), waiting for both URCs.
+    /// Disconnects the MQTT client (`+QMTDISC`), waiting for its URC.
+    ///
+    /// The reference implementation this was ported from also sends
+    /// `+QMTCLOSE` afterward, but only for a specific Quectel firmware
+    /// revision ("R200") — gated off by default. Left out here since it
+    /// isn't needed on a BG95-M3 and its URC never arrived when tried
+    /// unconditionally (see `NOTICE.md`'s reference project for that path
+    /// if a future modem/firmware combination needs it).
     pub async fn mqtt_disconnect(
         &mut self,
         tcp_connect_id: u8,
@@ -605,16 +632,6 @@ impl<'sub, C: AtatClient, const URC_CAPACITY: usize, const URC_SUBSCRIBERS: usiz
             .await?;
         self.wait_urc(deadline, |urc| match urc {
             Urc::MqttDisconnect(r) if r.tcpconnect_id == tcp_connect_id => Some(match r.result {
-                0 => Ok(()),
-                code => Err(ModemError::MqttRequestFailed(code)),
-            }),
-            _ => None,
-        })
-        .await?;
-
-        self.base.client.send(&MqttClose { tcp_connect_id }).await?;
-        self.wait_urc(deadline, |urc| match urc {
-            Urc::MqttClose(r) if r.tcpconnect_id == tcp_connect_id => Some(match r.result {
                 0 => Ok(()),
                 code => Err(ModemError::MqttRequestFailed(code)),
             }),
