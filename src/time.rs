@@ -1,6 +1,14 @@
-//! Parses the `"yy/MM/dd,hh:mm:ss±zz"` timestamp string shared by `AT+QLTS`
-//! and `AT+QNTP` (see `commands::responses::{NitzTimeResponse,
-//! NtpTimeResponse}`) into a Unix timestamp.
+//! Parses the `"yy/MM/dd,hh:mm:ss±zz"` (or `"yyyy/MM/dd,hh:mm:ss±zz"`)
+//! timestamp string used by `AT+QLTS` and `AT+QNTP` (see
+//! `commands::responses::{NitzTimeResponse, NtpTimeResponse}`) into a Unix
+//! timestamp.
+//!
+//! Both a 2-digit and a 4-digit year are accepted: `AT+QLTS` reports a
+//! 2-digit year, but `AT+QNTP` was confirmed on real BG95-M3 hardware to
+//! report a *4-digit* year for the same field (`"2026/07/18,16:32:18-20"`)
+//! despite the AT command manual documenting the same 2-digit layout for
+//! both — see quectel-bg9x-atat#5's follow-up. Which one `s` uses is
+//! detected from where the first `/` lands.
 //!
 //! Deliberately hand-rolled instead of pulling in the `time` crate: this
 //! crate is `no_std` and otherwise allocation-free (see the hex encoder in
@@ -13,52 +21,55 @@
 //! NTP-synced result), so the offset is informational rather than something
 //! to add back in.
 
-/// Minimum length of a well-formed `"yy/MM/dd,hh:mm:ss±zz"` prefix. Trailing
-/// bytes (e.g. NITZ's `,dst` suffix) are ignored.
-const PREFIX_LEN: usize = 20;
+/// Length of the fixed-width `"MM/dd,hh:mm:ss±zz"` suffix that follows the
+/// year (and its `/`), regardless of which year width was used.
+const SUFFIX_LEN: usize = 17;
 
-/// Parses the `"yy/MM/dd,hh:mm:ss±zz"` prefix of `s` into a Unix timestamp
-/// (seconds since 1970-01-01T00:00:00Z). Two-digit years are read as
-/// 2000-2099, matching the module's actual output (despite the AT command
-/// manual's example implying a wider range). Returns `None` if `s` doesn't
-/// match the expected layout.
+/// Parses the `"yy/MM/dd,hh:mm:ss±zz"` or `"yyyy/MM/dd,hh:mm:ss±zz"` prefix
+/// of `s` into a Unix timestamp (seconds since 1970-01-01T00:00:00Z).
+/// Two-digit years are read as 2000-2099. Returns `None` if `s` doesn't
+/// match either expected layout.
 pub(crate) fn parse_timestamp(s: &str) -> Option<i64> {
     let b = s.as_bytes();
-    if b.len() < PREFIX_LEN {
+
+    let (year, off) = if b.len() >= 5 && b[4] == b'/' {
+        (four_digits(b, 0)? as i32, 5)
+    } else if b.len() >= 3 && b[2] == b'/' {
+        (2000 + two_digits(b, 0)? as i32, 3)
+    } else {
+        return None;
+    };
+
+    if b.len() < off + SUFFIX_LEN {
         return None;
     }
 
-    let yy = two_digits(b, 0)?;
-    if b[2] != b'/' {
+    let month = two_digits(b, off)?;
+    if b[off + 2] != b'/' {
         return None;
     }
-    let month = two_digits(b, 3)?;
-    if b[5] != b'/' {
+    let day = two_digits(b, off + 3)?;
+    if b[off + 5] != b',' {
         return None;
     }
-    let day = two_digits(b, 6)?;
-    if b[8] != b',' {
+    let hour = two_digits(b, off + 6)?;
+    if b[off + 8] != b':' {
         return None;
     }
-    let hour = two_digits(b, 9)?;
-    if b[11] != b':' {
+    let minute = two_digits(b, off + 9)?;
+    if b[off + 11] != b':' {
         return None;
     }
-    let minute = two_digits(b, 12)?;
-    if b[14] != b':' {
+    let second = two_digits(b, off + 12)?;
+    if b[off + 14] != b'+' && b[off + 14] != b'-' {
         return None;
     }
-    let second = two_digits(b, 15)?;
-    if b[17] != b'+' && b[17] != b'-' {
-        return None;
-    }
-    let _tz_quarter_hours = two_digits(b, 18)?;
+    let _tz_quarter_hours = two_digits(b, off + 15)?;
 
     if !(1..=12).contains(&month) || hour > 23 || minute > 59 || second > 59 {
         return None;
     }
 
-    let year = 2000 + yy as i32;
     if day < 1 || day > days_in_month(year, month) {
         return None;
     }
@@ -87,6 +98,19 @@ fn two_digits(b: &[u8], at: usize) -> Option<u8> {
         return None;
     }
     Some(tens * 10 + ones)
+}
+
+/// Reads a four-ASCII-digit number at `b[at..at + 4]`.
+fn four_digits(b: &[u8], at: usize) -> Option<u16> {
+    let mut n: u16 = 0;
+    for &digit in &b[at..at + 4] {
+        let d = digit.checked_sub(b'0')?;
+        if d > 9 {
+            return None;
+        }
+        n = n * 10 + d as u16;
+    }
+    Some(n)
 }
 
 /// Days since 1970-01-01 for a proleptic-Gregorian civil date. Howard
@@ -139,10 +163,25 @@ mod tests {
     }
 
     #[test]
+    fn accepts_four_digit_year() {
+        // AT+QNTP on real BG95-M3 hardware reports a 4-digit year for this
+        // same field, despite the AT command manual documenting a 2-digit
+        // year for both AT+QLTS and AT+QNTP — see quectel-bg9x-atat#5.
+        assert_eq!(
+            parse_timestamp("2025/11/11,19:39:05+00"),
+            Some(1_762_889_945)
+        );
+        // Exact string captured from a live +QNTP URC.
+        assert_eq!(
+            parse_timestamp("2026/07/18,16:32:18-20"),
+            Some(1_784_392_338)
+        );
+    }
+
+    #[test]
     fn rejects_malformed_input() {
         assert_eq!(parse_timestamp(""), None);
         assert_eq!(parse_timestamp("25/11/11,19:39:05"), None); // missing tz
-        assert_eq!(parse_timestamp("2025/11/11,19:39:05+00"), None); // 4-digit year
         assert_eq!(parse_timestamp("25-11-11,19:39:05+00"), None); // wrong separators
         assert_eq!(parse_timestamp("25/13/11,19:39:05+00"), None); // month out of range
         assert_eq!(parse_timestamp("25/11/32,19:39:05+00"), None); // day out of range
