@@ -26,7 +26,7 @@ use crate::time::parse_timestamp;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ModemError {
     /// The command channel didn't get a (valid) response in time.
@@ -52,8 +52,10 @@ pub enum ModemError {
     /// the `+QNTP` URC.
     NtpRequestFailed(u8),
     /// A `+QLTS`/`+QNTP` timestamp string didn't match the expected
-    /// `"yy/MM/dd,hh:mm:ss±zz"` layout.
-    TimeParseFailed,
+    /// `"yy/MM/dd,hh:mm:ss±zz"` layout; payload is the raw string that
+    /// failed to parse (empty if `+QNTP` reported success but omitted the
+    /// time field entirely).
+    TimeParseFailed(String<32>),
     /// [`Bg9xModem::configure_rat_search_order`]'s RAT list was empty, had
     /// more than 3 entries, or contained a duplicate.
     InvalidRatOrder,
@@ -648,7 +650,8 @@ impl<C: AtatClient> Bg9xModem<C> {
 /// [`ModemError::TimeParseFailed`]. Shared by [`Bg9xModem::get_nitz_time`]
 /// and [`MqttModem::ntp_sync`].
 fn parse_timestamp_or_err(s: &str) -> Result<i64, ModemError> {
-    parse_timestamp(s).ok_or(ModemError::TimeParseFailed)
+    parse_timestamp(s)
+        .ok_or_else(|| ModemError::TimeParseFailed(String::try_from(s).unwrap_or_default()))
 }
 
 /// A [`Bg9xModem`] plus a URC subscription, unlocking the MQTT methods.
@@ -902,7 +905,7 @@ impl<'sub, C: AtatClient, const URC_CAPACITY: usize, const URC_SUBSCRIBERS: usiz
         self.wait_urc(deadline, |urc| match urc {
             Urc::NtpTime(r) => Some(match (r.err, &r.time) {
                 (0, Some(time)) => parse_timestamp_or_err(time.as_str()),
-                (0, None) => Err(ModemError::TimeParseFailed),
+                (0, None) => Err(ModemError::TimeParseFailed(String::new())),
                 (code, _) => Err(ModemError::NtpRequestFailed(code)),
             }),
             _ => None,
