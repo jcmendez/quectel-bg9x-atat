@@ -497,6 +497,12 @@ pub struct FileUploadToInternalFlash {
 /// Raw file bytes sent in response to a `CONNECT` prompt from
 /// [`FileUploadToInternalFlash`] or [`WriteFile`]. Not a real AT command —
 /// no formatting, no `OK`/`ERROR` expected (`EXPECTS_RESPONSE_CODE = false`).
+///
+/// Requires the `atat::asynch::Client`'s shared command buffer to be at
+/// least `MAX_LEN` (256) bytes — that buffer is sized once by whoever wires
+/// up the client, independent of any single command's `MAX_LEN`, so this
+/// can't be enforced at compile time. `AtatCmd::write`'s impl below asserts
+/// on it instead of panicking on an out-of-bounds slice copy.
 pub struct SendRawContents {
     pub bytes: Bytes<256>,
 }
@@ -508,6 +514,10 @@ impl atat::AtatCmd for SendRawContents {
 
     fn write(&self, buf: &mut [u8]) -> usize {
         let len = self.bytes.len();
+        assert!(
+            buf.len() >= len,
+            "atat client buffer must be at least SendRawContents::MAX_LEN (256) bytes"
+        );
         buf[..len].copy_from_slice(&self.bytes);
         len
     }

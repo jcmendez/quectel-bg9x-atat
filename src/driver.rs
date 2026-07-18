@@ -60,6 +60,11 @@ pub enum ModemError {
     /// An `AT+QFUPL`/`AT+QFWRITE` file transfer completed, but the modem
     /// reported a different size than what was actually sent.
     FileTransferFailed,
+    /// `AT+QFLST` matched more files than [`FileListResponse`] has capacity
+    /// for (5) — the modem's response parsed but couldn't be captured in
+    /// full. Narrow `name_pattern` (e.g. list a specific filename instead of
+    /// `"*"`) or delete unused files and retry.
+    TooManyFiles,
 }
 
 impl From<atat::Error> for ModemError {
@@ -571,6 +576,11 @@ impl<C: AtatClient> Bg9xModem<C> {
     /// filehandle for use with [`Self::read_file`]/[`Self::close_file`], or
     /// [`MqttModem::write_file`]. `mode` defaults to
     /// [`FileOpenMode::CreateOrOpen`] if `None`.
+    ///
+    /// There's no RAII guard tying the handle's lifetime to
+    /// [`Self::close_file`] — the modem caps how many files can be open at
+    /// once, so on an `Err` from a subsequent read/write, close the handle
+    /// yourself before propagating the error rather than leaking it.
     pub async fn open_file(
         &mut self,
         filename: &str,
@@ -600,26 +610,36 @@ impl<C: AtatClient> Bg9xModem<C> {
     }
 
     /// Lists files on UFS matching `name_pattern` (`AT+QFLST`), e.g. `"*"`
-    /// for everything. Up to 5 entries per query.
+    /// for everything. Up to 5 entries per query — a 6th+ match doesn't
+    /// truncate the list, it fails the whole call with
+    /// [`ModemError::TooManyFiles`].
     pub async fn list_files(&mut self, name_pattern: &str) -> Result<FileListResponse, ModemError> {
         let name_pattern =
             String::try_from(name_pattern).map_err(|_| ModemError::ArgumentTooLong)?;
-        Ok(self
-            .client
+        self.client
             .send(&ListFilesFromInternalFlash { name_pattern })
-            .await?)
+            .await
+            .map_err(|e| match e {
+                atat::Error::Parse => ModemError::TooManyFiles,
+                e => e.into(),
+            })
     }
 
-    /// Reads up to `length` bytes (256 max; omit for "as many as fit in one
-    /// response") from an already-open filehandle (`AT+QFREAD`), starting at
-    /// its current position. The modem auto-advances the read position on
-    /// each call — loop this, checking `read_length` against what was
-    /// requested to detect end of file, to read more than 256 bytes.
+    /// Reads up to `length` bytes (256 max — this driver's read buffer size;
+    /// larger requests are silently capped rather than rejected, and `None`
+    /// defaults to the cap) from an already-open filehandle (`AT+QFREAD`),
+    /// starting at its current position. The modem auto-advances the read
+    /// position on each call — loop this, checking `read_length` against
+    /// what was requested to detect end of file, to read more than 256
+    /// bytes. `filehandle` is only valid until [`Self::close_file`]; on an
+    /// `Err` from this call, close it anyway to avoid leaking the modem-side
+    /// handle.
     pub async fn read_file(
         &mut self,
         filehandle: u32,
         length: Option<u32>,
     ) -> Result<FileReadStarted, ModemError> {
+        let length = Some(length.unwrap_or(256).min(256));
         Ok(self.client.send(&ReadFile { filehandle, length }).await?)
     }
 }
@@ -886,46 +906,24 @@ impl<'sub, C: AtatClient, const URC_CAPACITY: usize, const URC_SUBSCRIBERS: usiz
         .await
     }
 
-    /// Uploads `data` as `filename` to UFS in one shot (`AT+QFUPL`) —
-    /// creates or overwrites the file itself, unlike
-    /// [`Bg9xModem::open_file`] + [`Self::write_file`], which write into an
-    /// already-open filehandle. `timeout` bounds the whole sequence.
-    ///
-    /// The modem answers `AT+QFUPL` itself with a bare `CONNECT` line
-    /// instead of `OK`, so that command's own response never resolves
-    /// normally and its `Err`/timeout is discarded here — this waits for
-    /// `CONNECT` as a URC ([`Urc::FileDataModeStarted`]) instead, sends
-    /// `data` in 256-byte chunks, then waits for the `+QFUPL` completion URC
-    /// and checks its reported size against what was actually sent.
-    ///
-    /// Neither URC carries an id to correlate it with this specific call, so
-    /// [`Self::drain_stale_urcs`] clears out anything left over from an
-    /// earlier timed-out `upload_file` before issuing a new request — see
-    /// that method's doc comment for why.
-    pub async fn upload_file(
+    /// Clamps a caller-supplied timeout down to the 1-65535s range accepted
+    /// by the modem's file-transfer `timeout` argument.
+    fn clamp_timeout_secs(timeout: Duration) -> u16 {
+        timeout.as_secs().clamp(1, u16::MAX as u64) as u16
+    }
+
+    /// Waits for the `CONNECT` data-mode prompt ([`Urc::FileDataModeStarted`]),
+    /// sends `data` in 256-byte chunks, then waits for the transfer's
+    /// completion URC via `on_complete` — the shared back half of
+    /// [`Self::upload_file`] and [`Self::write_file`], which differ only in
+    /// which command starts the transfer and which completion URC/field
+    /// they check.
+    async fn send_file_data<R>(
         &mut self,
-        filename: &str,
+        deadline: Instant,
         data: &[u8],
-        timeout: Duration,
-    ) -> Result<(), ModemError> {
-        let deadline = Instant::now() + timeout;
-        let len = data.len() as u32;
-        let upload_timeout_secs = timeout.as_secs().clamp(1, u16::MAX as u64) as u16;
-
-        self.drain_stale_urcs();
-
-        let file_path = String::try_from(filename).map_err(|_| ModemError::ArgumentTooLong)?;
-        let _ = self
-            .base
-            .client
-            .send(&FileUploadToInternalFlash {
-                file_path,
-                file_size: len,
-                timeout: Some(upload_timeout_secs),
-                ack_mode: None,
-            })
-            .await;
-
+        on_complete: impl FnMut(&Urc) -> Option<Result<R, ModemError>>,
+    ) -> Result<R, ModemError> {
         self.wait_urc(deadline, |urc| match urc {
             Urc::FileDataModeStarted => Some(Ok(())),
             _ => None,
@@ -941,9 +939,71 @@ impl<'sub, C: AtatClient, const URC_CAPACITY: usize, const URC_SUBSCRIBERS: usiz
                 .await?;
         }
 
-        self.wait_urc(deadline, |urc| match urc {
+        self.wait_urc(deadline, on_complete).await
+    }
+
+    /// Uploads `data` as `filename` to UFS in one shot (`AT+QFUPL`) —
+    /// creates or overwrites the file itself, unlike
+    /// [`Bg9xModem::open_file`] + [`Self::write_file`], which write into an
+    /// already-open filehandle. On success, returns the modem's reported
+    /// checksum (`+QFUPL`'s 16-bit XOR-based checksum, as 4 hex digits) —
+    /// this driver only verifies the reported *size* against what was sent;
+    /// verify the checksum yourself if you need corruption detection beyond
+    /// that (its exact algorithm isn't reproduced here).
+    ///
+    /// The modem answers `AT+QFUPL` itself with a bare `CONNECT` line
+    /// instead of `OK`, delivered as [`Urc::FileDataModeStarted`] rather
+    /// than this command's own response — so that command's own `send` can
+    /// only return `Ok` on a bug-for-bug-unlikely modem, or `Err`, and an
+    /// `Err` here is ambiguous between "the expected case: no OK/ERROR ever
+    /// arrives, because the modem replied CONNECT instead" (an
+    /// `atat::Error::Timeout`, silently expected) and a genuine modem
+    /// rejection (`ERROR`/`+CME ERROR`, an `atat::Error` of any other kind),
+    /// which resolves promptly and is propagated as a real error instead of
+    /// being swallowed.
+    ///
+    /// `timeout` bounds waiting for `CONNECT` and the completion URC — not
+    /// the initial `AT+QFUPL` round-trip itself, which always runs out to
+    /// that command's own fixed internal timeout (currently 1s) first,
+    /// since on the expected/successful path nothing ever signals that
+    /// command's own response.
+    ///
+    /// Neither the `CONNECT` nor the completion URC carries an id to
+    /// correlate it with this specific call, so [`Self::drain_stale_urcs`]
+    /// clears out anything left over from an earlier timed-out
+    /// `upload_file` before issuing a new request — see that method's doc
+    /// comment for why.
+    pub async fn upload_file(
+        &mut self,
+        filename: &str,
+        data: &[u8],
+        timeout: Duration,
+    ) -> Result<Bytes<4>, ModemError> {
+        let len = data.len() as u32;
+        let upload_timeout_secs = Self::clamp_timeout_secs(timeout);
+
+        self.drain_stale_urcs();
+
+        let file_path = String::try_from(filename).map_err(|_| ModemError::ArgumentTooLong)?;
+        match self
+            .base
+            .client
+            .send(&FileUploadToInternalFlash {
+                file_path,
+                file_size: len,
+                timeout: Some(upload_timeout_secs),
+                ack_mode: None,
+            })
+            .await
+        {
+            Ok(_) | Err(atat::Error::Timeout) => {}
+            Err(e) => return Err(e.into()),
+        }
+
+        let deadline = Instant::now() + timeout;
+        self.send_file_data(deadline, data, |urc| match urc {
             Urc::FileUploadDone(r) => Some(if r.upload_size == len {
-                Ok(())
+                Ok(r.checksum.clone())
             } else {
                 Err(ModemError::FileTransferFailed)
             }),
@@ -953,23 +1013,23 @@ impl<'sub, C: AtatClient, const URC_CAPACITY: usize, const URC_SUBSCRIBERS: usiz
     }
 
     /// Writes `data` to an already-open filehandle (`AT+QFWRITE`) — see
-    /// [`Bg9xModem::open_file`]. Same `CONNECT`/completion-URC handshake —
-    /// including the same stale-URC draining, see [`Self::upload_file`]'s
-    /// doc comment — as [`Self::upload_file`], waiting for the `+QFWRITE`
-    /// completion URC instead of `+QFUPL`.
+    /// [`Bg9xModem::open_file`]. Same `CONNECT`/completion-URC handshake,
+    /// same stale-URC draining, and the same caveat about `timeout` not
+    /// bounding the initial round-trip (this command's own internal timeout
+    /// floor is 5s) or about a genuine modem error being propagated instead
+    /// of swallowed — see [`Self::upload_file`]'s doc comment for why.
     pub async fn write_file(
         &mut self,
         filehandle: u32,
         data: &[u8],
         timeout: Duration,
     ) -> Result<(), ModemError> {
-        let deadline = Instant::now() + timeout;
         let len = data.len() as u32;
-        let write_timeout_secs = timeout.as_secs().clamp(1, u16::MAX as u64) as u16;
+        let write_timeout_secs = Self::clamp_timeout_secs(timeout);
 
         self.drain_stale_urcs();
 
-        let _ = self
+        match self
             .base
             .client
             .send(&WriteFile {
@@ -977,24 +1037,14 @@ impl<'sub, C: AtatClient, const URC_CAPACITY: usize, const URC_SUBSCRIBERS: usiz
                 length: len,
                 timeout: Some(write_timeout_secs),
             })
-            .await;
-
-        self.wait_urc(deadline, |urc| match urc {
-            Urc::FileDataModeStarted => Some(Ok(())),
-            _ => None,
-        })
-        .await?;
-
-        for chunk in data.chunks(256) {
-            self.base
-                .client
-                .send(&SendRawContents {
-                    bytes: Bytes::try_from(chunk).unwrap(),
-                })
-                .await?;
+            .await
+        {
+            Ok(_) | Err(atat::Error::Timeout) => {}
+            Err(e) => return Err(e.into()),
         }
 
-        self.wait_urc(deadline, |urc| match urc {
+        let deadline = Instant::now() + timeout;
+        self.send_file_data(deadline, data, |urc| match urc {
             Urc::FileWriteDone(r) => Some(if r.written_length == len {
                 Ok(())
             } else {
