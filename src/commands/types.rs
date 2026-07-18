@@ -156,6 +156,21 @@ pub enum IotOperationMode {
     EmtcAndNbIot = 2,
 }
 
+/// File open mode (`AT+QFOPEN`).
+#[derive(Copy, Clone, Debug, PartialEq, AtatEnum)]
+#[repr(u8)]
+pub enum FileOpenMode {
+    /// Create the file if it doesn't exist, open (read/write) if it does.
+    CreateOrOpen = 0,
+    /// Create the file, or truncate/overwrite it if it already exists
+    /// (read/write).
+    CreateOrOverwrite = 1,
+    /// Open an existing file read-only; fails if it doesn't exist.
+    ReadOnly = 2,
+    /// Create the file if it doesn't exist, append (read/write) if it does.
+    CreateOrAppend = 3,
+}
+
 /// A radio access technology, for building the `AT+QCFG="nwscanseq"` search
 /// order with [`build_rat_search_order`].
 #[derive(Copy, Clone, Debug, PartialEq)]

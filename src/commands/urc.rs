@@ -6,8 +6,9 @@
 use atat::atat_derive::AtatUrc;
 
 use super::responses::{
-    CmeError, MqttCloseResponse, MqttConnectResponse, MqttDisconnectResponse, MqttOpenResponse,
-    MqttPublishResponse, MqttStatusResponse, NtpTimeResponse,
+    CmeError, FileUploadDoneResponse, FileWriteResponse, MqttCloseResponse, MqttConnectResponse,
+    MqttDisconnectResponse, MqttOpenResponse, MqttPublishResponse, MqttStatusResponse,
+    NtpTimeResponse,
 };
 
 #[derive(Clone, AtatUrc, Debug)]
@@ -46,4 +47,18 @@ pub enum Urc {
     /// Result of closing the MQTT network socket (`MqttClose` command).
     #[at_urc("+QMTCLOSE")]
     MqttClose(MqttCloseResponse),
+    /// The modem is ready to receive raw file bytes after an
+    /// `AT+QFUPL`/`AT+QFWRITE` command. Arrives as a bare `CONNECT` line —
+    /// distinct from `AT+QFREAD`'s `CONNECT <read_length>` response line,
+    /// which doesn't match this pattern (see
+    /// [`crate::commands::parse_read_file`]) and is never captured as a URC.
+    #[at_urc("CONNECT")]
+    FileDataModeStarted,
+    /// Result of an `AT+QFUPL` file upload (`FileUploadToInternalFlash`
+    /// command).
+    #[at_urc("+QFUPL")]
+    FileUploadDone(FileUploadDoneResponse),
+    /// Result of an `AT+QFWRITE` file write (`WriteFile` command).
+    #[at_urc("+QFWRITE")]
+    FileWriteDone(FileWriteResponse),
 }

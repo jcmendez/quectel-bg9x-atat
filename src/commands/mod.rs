@@ -376,8 +376,9 @@ pub struct ConfigureSslCipherSuites {
 }
 
 /// `AT+QSSLCFG="cacert"` — path to a CA certificate already present in the
-/// module's UFS file system (this crate doesn't yet handle uploading files —
-/// see `NOTICE.md`/README for scope).
+/// module's UFS file system. Get it there first with
+/// [`crate::driver::MqttModem::upload_file`] or
+/// [`crate::driver::MqttModem::write_file`].
 #[derive(Clone, AtatCmd)]
 #[at_cmd("+QSSLCFG", NoResponse, timeout_ms = 300)]
 pub struct ConfigureSslCaCertificate {
@@ -459,4 +460,218 @@ pub struct ConfigureSslCheckHost {
     pub context_id: u8,
     #[at_arg(position = 2)]
     pub checkhost_enable: SslCheckHostEnable,
+}
+
+// --- UFS file management ---
+//
+// Ported from the reference driver's file-management support — see
+// `NOTICE.md`. `AT+QFDWL` is intentionally not ported: the reference's own
+// implementation of it can't capture the binary payload with the atat
+// framework and just drops it on the floor. `OpenFile`+`ReadFile`+`CloseFile`
+// below is the reference's own working read path and covers the same need
+// (e.g. reading back an uploaded cert to verify it).
+
+/// `AT+QFUPL` — uploads a file to UFS in a single shot. The modem replies to
+/// this command with a bare `CONNECT` line instead of `OK`, delivered as the
+/// [`crate::commands::urc::Urc::FileDataModeStarted`] URC — so this
+/// command's own response never resolves normally, and its `Err`/timeout is
+/// discarded rather than propagated. See
+/// [`crate::driver::MqttModem::upload_file`].
+#[derive(Clone, AtatCmd)]
+#[at_cmd("+QFUPL", NoResponse, timeout_ms = 1000)]
+pub struct FileUploadToInternalFlash {
+    /// The file path in the file system.
+    #[at_arg(position = 1)]
+    pub file_path: String<80>,
+    /// Size of the file to be uploaded, in bytes.
+    #[at_arg(position = 2)]
+    pub file_size: u32,
+    /// Seconds to wait for data to be sent in. 1-65535.
+    #[at_arg(position = 3)]
+    pub timeout: Option<u16>,
+    /// Whether to use acknowledgment mode.
+    #[at_arg(position = 4)]
+    pub ack_mode: Option<bool>,
+}
+
+/// Raw file bytes sent in response to a `CONNECT` prompt from
+/// [`FileUploadToInternalFlash`] or [`WriteFile`]. Not a real AT command —
+/// no formatting, no `OK`/`ERROR` expected (`EXPECTS_RESPONSE_CODE = false`).
+pub struct SendRawContents {
+    pub bytes: Bytes<256>,
+}
+
+impl atat::AtatCmd for SendRawContents {
+    type Response = NoResponse;
+    const MAX_LEN: usize = 256;
+    const EXPECTS_RESPONSE_CODE: bool = false;
+
+    fn write(&self, buf: &mut [u8]) -> usize {
+        let len = self.bytes.len();
+        buf[..len].copy_from_slice(&self.bytes);
+        len
+    }
+
+    fn parse(
+        &self,
+        _resp: Result<&[u8], atat::InternalError>,
+    ) -> Result<Self::Response, atat::Error> {
+        Ok(NoResponse)
+    }
+}
+
+/// `AT+QFDEL` — deletes a file from UFS.
+#[derive(Clone, AtatCmd)]
+#[at_cmd("+QFDEL", NoResponse, timeout_ms = 300)]
+pub struct DeleteFileFromInternalFlash {
+    /// The file path in the file system.
+    #[at_arg(position = 1)]
+    pub file_path: String<80>,
+}
+
+/// `AT+QFLST` — lists files in UFS matching `name_pattern` (e.g. `"*"` for
+/// all files), up to 5 entries per query.
+#[derive(Clone, AtatCmd)]
+#[at_cmd("+QFLST", FileListResponse, timeout_ms = 1000)]
+pub struct ListFilesFromInternalFlash {
+    /// The file pattern to be listed, e.g. `"*"` for all files.
+    #[at_arg(position = 1)]
+    pub name_pattern: String<80>,
+}
+
+/// `AT+QFOPEN` — opens (or creates) a file, returning a filehandle for use
+/// with [`ReadFile`]/[`WriteFile`]/[`CloseFile`]. `mode` defaults to
+/// [`FileOpenMode::CreateOrOpen`] if omitted.
+#[derive(Clone, AtatCmd)]
+#[at_cmd("+QFOPEN", FileOpenResponse, timeout_ms = 1000)]
+pub struct OpenFile {
+    /// The file path in the file system.
+    #[at_arg(position = 1)]
+    pub filename: String<80>,
+    /// The open mode of the file.
+    #[at_arg(position = 2)]
+    pub mode: Option<FileOpenMode>,
+}
+
+/// `AT+QFCLOSE` — closes a filehandle opened with [`OpenFile`].
+#[derive(Clone, AtatCmd)]
+#[at_cmd("+QFCLOSE", NoResponse, timeout_ms = 1000)]
+pub struct CloseFile {
+    /// The handle of the file to be closed.
+    #[at_arg(position = 1)]
+    pub filehandle: u32,
+}
+
+/// Extracts the binary payload from an `AT+QFREAD` response
+/// (`CONNECT <read_length>\r\n<binary_data>`), which doesn't fit atat's
+/// normal comma-separated response parsing since the payload can contain
+/// arbitrary bytes. Used as [`ReadFile`]'s `#[at_cmd(parse = ...)]` override
+/// — everything else about the command (its request formatting) still goes
+/// through the regular derive.
+fn parse_read_file(resp: &[u8]) -> Result<FileReadStarted, ()> {
+    const CONNECT: &[u8] = b"CONNECT ";
+    let start = resp
+        .windows(CONNECT.len())
+        .position(|w| w == CONNECT)
+        .ok_or(())?
+        + CONNECT.len();
+    let after = &resp[start..];
+    let crlf = after.windows(2).position(|w| w == b"\r\n").ok_or(())?;
+    let claimed_len: usize = core::str::from_utf8(&after[..crlf])
+        .map_err(|_| ())?
+        .trim()
+        .parse()
+        .map_err(|_| ())?;
+    let binary = &after[crlf + 2..];
+    let take = claimed_len.min(binary.len()).min(256);
+    let mut data = Bytes::<256>::new();
+    data.extend_from_slice(&binary[..take]).map_err(|_| ())?;
+    Ok(FileReadStarted {
+        read_length: take as u32,
+        data,
+    })
+}
+
+/// `AT+QFREAD` — reads up to `length` bytes (256 max; omit for "as many as
+/// fit in one response") from an already-open filehandle, starting at its
+/// current position. The modem auto-advances the read position on each
+/// call, so repeated calls without an explicit seek read through the file
+/// sequentially; a short read (less than requested) means end of file. See
+/// [`parse_read_file`] for how the non-standard `CONNECT`-prefixed response
+/// is handled, and [`crate::driver::Bg9xModem::read_file`].
+#[derive(Clone, AtatCmd)]
+#[at_cmd("+QFREAD", FileReadStarted, timeout_ms = 2000, parse = parse_read_file)]
+pub struct ReadFile {
+    /// The handle of the file to be operated.
+    #[at_arg(position = 1)]
+    pub filehandle: u32,
+    /// The length of the file to be read out. If omitted, reads as many
+    /// bytes as fit in one response.
+    #[at_arg(position = 2)]
+    pub length: Option<u32>,
+}
+
+/// `AT+QFWRITE` — writes to an already-open filehandle. Like
+/// [`FileUploadToInternalFlash`], the modem replies with `CONNECT` instead
+/// of `OK`, so this command's own response is discarded rather than
+/// propagated. See [`crate::driver::MqttModem::write_file`].
+#[derive(Clone, AtatCmd)]
+#[at_cmd("+QFWRITE", NoResponse, timeout_ms = 5000)]
+pub struct WriteFile {
+    /// The handle of the file to be operated.
+    #[at_arg(position = 1)]
+    pub filehandle: u32,
+    /// The length of the file to be written.
+    #[at_arg(position = 2)]
+    pub length: u32,
+    /// Seconds to wait for data. 1-65535, default 5.
+    #[at_arg(position = 3)]
+    pub timeout: Option<u16>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_read_file;
+
+    #[test]
+    fn parses_connect_response_with_binary_payload() {
+        let mut resp = b"CONNECT 5\r\n".to_vec();
+        resp.extend_from_slice(b"\x00\x01\xff\r\n");
+        resp.extend_from_slice(b"\r\nOK\r\n");
+
+        let parsed = parse_read_file(&resp).unwrap();
+        assert_eq!(parsed.read_length, 5);
+        assert_eq!(&parsed.data[..], b"\x00\x01\xff\r\n");
+    }
+
+    #[test]
+    fn caps_at_256_bytes_even_if_modem_claims_more() {
+        let mut resp = b"CONNECT 300\r\n".to_vec();
+        resp.extend(core::iter::repeat_n(b'a', 300));
+
+        let parsed = parse_read_file(&resp).unwrap();
+        assert_eq!(parsed.read_length, 256);
+        assert_eq!(parsed.data.len(), 256);
+    }
+
+    #[test]
+    fn short_read_reports_actual_bytes_available() {
+        let mut resp = b"CONNECT 128\r\n".to_vec();
+        resp.extend_from_slice(b"only 10 b\r\n"); // 11 bytes < claimed 128
+
+        let parsed = parse_read_file(&resp).unwrap();
+        assert_eq!(parsed.read_length, 11);
+        assert_eq!(&parsed.data[..], b"only 10 b\r\n");
+    }
+
+    #[test]
+    fn rejects_response_without_connect() {
+        assert!(parse_read_file(b"\r\nERROR\r\n").is_err());
+    }
+
+    #[test]
+    fn rejects_response_with_bare_connect_and_no_length() {
+        // The `CONNECT\r\n` URC line for QFUPL/QFWRITE, not QFREAD's shape.
+        assert!(parse_read_file(b"CONNECT\r\n").is_err());
+    }
 }

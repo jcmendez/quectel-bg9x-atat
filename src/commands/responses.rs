@@ -5,7 +5,7 @@
 //! Commands Manual.
 
 use atat::atat_derive::AtatResp;
-use atat::heapless::String;
+use atat::heapless::{String, Vec};
 use atat::heapless_bytes::Bytes;
 
 #[derive(Clone, AtatResp)]
@@ -269,3 +269,71 @@ pub struct MqttCloseResponse {
     #[at_arg(position = 2)]
     pub result: i8,
 }
+
+/// URC `+QFUPL: <upload_size>,<checksum>` — result of an `AT+QFUPL` upload
+/// (`FileUploadToInternalFlash` command). Arrives as a URC rather than the
+/// command's own response, since the modem answers the command itself with
+/// `CONNECT` (see [`crate::commands::urc::Urc::FileDataModeStarted`]).
+#[derive(Clone, Debug, AtatResp)]
+pub struct FileUploadDoneResponse {
+    #[at_arg(position = 1)]
+    pub upload_size: u32,
+    /// 16-bit checksum (bitwise XOR of the uploaded bytes) as a 4-hex-digit
+    /// string.
+    #[at_arg(position = 2)]
+    pub checksum: Bytes<4>,
+}
+
+/// URC `+QFWRITE: <written_length>,<total_length>` — result of an
+/// `AT+QFWRITE` write (`WriteFile` command). Arrives as a URC for the same
+/// reason as [`FileUploadDoneResponse`].
+#[derive(Clone, Debug, AtatResp)]
+pub struct FileWriteResponse {
+    #[at_arg(position = 1)]
+    pub written_length: u32,
+    #[at_arg(position = 2)]
+    pub total_length: u32,
+}
+
+/// One entry of an `AT+QFLST` file listing (`+QFLST: <filename>,<file_size>`).
+#[derive(Clone, Debug, AtatResp)]
+pub struct FileListEntry {
+    #[at_arg(position = 1)]
+    pub filename: String<80>,
+    #[at_arg(position = 2)]
+    pub file_size: u32,
+}
+
+/// `AT+QFLST` response (`ListFilesFromInternalFlash` command). Up to 5
+/// entries per query, matching the reference driver this was ported from
+/// (see `NOTICE.md`).
+#[derive(Clone, Debug, AtatResp)]
+pub struct FileListResponse {
+    #[at_arg(position = 0)]
+    pub files: Vec<FileListEntry, 5>,
+}
+
+/// `AT+QFOPEN` response (`OpenFile` command).
+#[derive(Clone, Debug, AtatResp)]
+pub struct FileOpenResponse {
+    #[at_arg(position = 1)]
+    pub filehandle: u32,
+}
+
+/// `AT+QFREAD` response: `CONNECT <read_length>\r\n<binary_data>` in place
+/// of the usual comma-separated reply. Parsed directly out of the raw
+/// response bytes by [`crate::commands::parse_read_file`] rather than
+/// through the normal `AtatResp` derive, since the binary payload can
+/// contain arbitrary bytes that would confuse a delimiter-based parser.
+#[derive(Clone, Debug)]
+pub struct FileReadStarted {
+    /// Number of bytes actually captured in `data`. Can be less than what
+    /// was requested (end of file) or less than what the modem itself
+    /// claimed in the `CONNECT <read_length>` line, if that line's promised
+    /// byte count exceeds `data`'s 256-byte capacity or what's actually
+    /// present in the response buffer.
+    pub read_length: u32,
+    pub data: Bytes<256>,
+}
+
+impl atat::AtatResp for FileReadStarted {}
