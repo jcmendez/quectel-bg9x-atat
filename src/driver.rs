@@ -804,14 +804,18 @@ impl<'sub, C: AtatClient, const URC_CAPACITY: usize, const URC_SUBSCRIBERS: usiz
         .await
     }
 
-    /// Publishes `payload` to `topic`. `qos` 0-2. Waits for the broker's
-    /// PUBACK (relayed as the `+QMTPUB` URC) or `timeout`.
+    /// Publishes `payload` to `topic`. `qos` 0-2. `retain` sets the MQTT
+    /// retain flag, so the broker holds this as the topic's last-known value
+    /// for new subscribers. Waits for the broker's PUBACK (relayed as the
+    /// `+QMTPUB` URC) or `timeout`.
+    #[allow(clippy::too_many_arguments)]
     pub async fn mqtt_publish(
         &mut self,
         tcp_connect_id: u8,
         topic: &str,
         payload: &str,
         qos: u8,
+        retain: bool,
         timeout: Duration,
     ) -> Result<(), ModemError> {
         let deadline = Instant::now() + timeout;
@@ -824,7 +828,7 @@ impl<'sub, C: AtatClient, const URC_CAPACITY: usize, const URC_SUBSCRIBERS: usiz
                 tcp_connect_id,
                 msg_id,
                 qos,
-                retain: 0,
+                retain: if retain { 1 } else { 0 },
                 topic: String::try_from(topic).map_err(|_| ModemError::ArgumentTooLong)?,
                 payload: String::try_from(payload).map_err(|_| ModemError::ArgumentTooLong)?,
             })

@@ -59,7 +59,7 @@ modem.mqtt_connect(0, "broker.example.com", 1883, "my-client-id", None, None, No
 modem.configure_ssl_context(&SslConfig::new(2)).await?;
 modem.mqtt_connect(0, "broker.example.com", 8883, "my-client-id", None, None, Some(2), Duration::from_secs(30)).await?;
 
-modem.mqtt_publish(0, "my/topic", "hello", 1, Duration::from_secs(10)).await?;
+modem.mqtt_publish(0, "my/topic", "hello", 1, false, Duration::from_secs(10)).await?;
 modem.mqtt_disconnect(0, Duration::from_secs(10)).await?;
 ```
 
