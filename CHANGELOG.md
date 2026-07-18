@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `Bg9xModem::get_version_info` (`AT+QGMR`) — the `GetVersionInfo` command
+  struct existed but was never wired up, despite the README/CHANGELOG
+  claiming firmware version was already covered under "identity".
+
 ## 0.1.1
 
 Everything below was found and fixed against real hardware (Sixfab Pico LTE,

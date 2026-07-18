@@ -338,6 +338,12 @@ impl<C: AtatClient> Bg9xModem<C> {
         Ok(self.client.send(&GetIccid).await?.iccid)
     }
 
+    /// Firmware version string, e.g. `"BG95M3LAR02A03_01.012.01.012"`
+    /// (`AT+QGMR`).
+    pub async fn get_version_info(&mut self) -> Result<atat::heapless_bytes::Bytes<64>, ModemError> {
+        Ok(self.client.send(&GetVersionInfo).await?.code)
+    }
+
     pub async fn get_signal_strength(&mut self) -> Result<GetSignalStrengthResponse, ModemError> {
         Ok(self.client.send(&GetSignalStrength).await?)
     }
