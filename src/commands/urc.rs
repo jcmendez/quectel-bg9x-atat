@@ -7,7 +7,7 @@ use atat::atat_derive::AtatUrc;
 
 use super::responses::{
     CmeError, MqttCloseResponse, MqttConnectResponse, MqttDisconnectResponse, MqttOpenResponse,
-    MqttPublishResponse, MqttStatusResponse,
+    MqttPublishResponse, MqttStatusResponse, NtpTimeResponse,
 };
 
 #[derive(Clone, AtatUrc, Debug)]
@@ -25,6 +25,9 @@ pub enum Urc {
     /// response to `AT+CPIN?` when no SIM is inserted.
     #[at_urc("+CME ERROR")]
     CmeError(CmeError),
+    /// Result of an `AT+QNTP` NTP time sync (`GetNetworkNtpTime` command).
+    #[at_urc("+QNTP")]
+    NtpTime(NtpTimeResponse),
     /// Result of opening the MQTT network socket (`MqttOpen` command).
     #[at_urc("+QMTOPEN")]
     MqttOpen(MqttOpenResponse),

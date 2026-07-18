@@ -150,6 +150,29 @@ pub struct PDPContextInfo {
     pub ip_address: Option<String<64>>,
 }
 
+/// Latest time synchronized through the network (`AT+QLTS`).
+///
+/// `+QLTS: "yy/MM/dd,hh:mm:ss±zz,dst"` — a single quoted string combining the
+/// timestamp and daylight-saving flag.
+#[derive(Clone, Debug, AtatResp)]
+pub struct NitzTimeResponse {
+    #[at_arg(position = 1)]
+    pub time_and_dst: String<32>,
+}
+
+/// URC `+QNTP: <err>,<time>` — result of an `AT+QNTP` NTP sync.
+///
+/// `err`: 0 on success, nonzero on failure (see Quectel's TCP/IP AT command
+/// manual for the code table). `time`: `"yy/MM/dd,hh:mm:ss±zz"`, only
+/// meaningful when `err == 0`.
+#[derive(Clone, Debug, AtatResp)]
+pub struct NtpTimeResponse {
+    #[at_arg(position = 1)]
+    pub err: u8,
+    #[at_arg(position = 2)]
+    pub time: String<32>,
+}
+
 /// Final result code indicating a mobile-equipment/network error
 /// (`+CME ERROR: <err>`), delivered as a URC e.g. in response to
 /// `AT+CPIN?` when no SIM is inserted.

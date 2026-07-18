@@ -132,6 +132,29 @@ pub struct DeactivatePDPContext {
     pub context_id: u8,
 }
 
+/// `AT+QLTS` — queries the latest time synchronized through the network.
+#[derive(Clone, AtatCmd)]
+#[at_cmd("+QLTS", NitzTimeResponse, timeout_ms = 300)]
+pub struct GetNetworkNitzTime {
+    /// 0: latest time synced through the network. 1: current GMT time
+    /// calculated from that synced time. 2: current local time calculated
+    /// from that synced time.
+    #[at_arg(position = 1)]
+    pub mode: u8,
+}
+
+/// `AT+QNTP` — synchronizes local time with an NTP server. Requires an
+/// active PDP context. Success here only means the request was accepted;
+/// the result arrives as a [`crate::commands::urc::Urc::NtpTime`] URC.
+#[derive(Clone, AtatCmd)]
+#[at_cmd("+QNTP", NoResponse, timeout_ms = 300)]
+pub struct GetNetworkNtpTime {
+    #[at_arg(position = 1)]
+    pub context_id: u8,
+    #[at_arg(position = 2)]
+    pub server: String<100>,
+}
+
 /// `AT+QPOWD` — powers down the module.
 #[derive(Clone, AtatCmd)]
 #[at_cmd("+QPOWD", NoResponse, timeout_ms = 300)]

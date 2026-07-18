@@ -18,6 +18,7 @@ use crate::commands::types::{
 };
 use crate::commands::urc::Urc;
 use crate::commands::*;
+use crate::time::parse_timestamp;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 
@@ -43,6 +44,12 @@ pub enum ModemError {
     /// The MQTT broker refused the CONNECT (bad credentials, protocol
     /// version, etc.); payload is the raw CONNACK return code.
     MqttConnectRefused(u8),
+    /// An `AT+QNTP` sync failed; payload is the raw Quectel error code from
+    /// the `+QNTP` URC.
+    NtpRequestFailed(u8),
+    /// A `+QLTS`/`+QNTP` timestamp string didn't match the expected
+    /// `"yy/MM/dd,hh:mm:ss±zz"` layout.
+    TimeParseFailed,
 }
 
 impl From<atat::Error> for ModemError {
@@ -436,6 +443,17 @@ impl<C: AtatClient> Bg9xModem<C> {
             Timer::after(POLL_INTERVAL).await;
         }
     }
+
+    /// Queries the latest time synchronized through the network
+    /// (`AT+QLTS`), returning a Unix timestamp. `mode` 0: latest synced
+    /// time. 1: current GMT time. 2: current local time (adds the network's
+    /// timezone offset to the wall-clock fields, so parsing it the same way
+    /// as `mode` 1 doesn't put it back into a true GMT timestamp — prefer
+    /// mode 1 unless the local time is what's actually wanted).
+    pub async fn get_nitz_time(&mut self, mode: u8) -> Result<i64, ModemError> {
+        let response = self.client.send(&GetNetworkNitzTime { mode }).await?;
+        parse_timestamp(response.time_and_dst.as_str()).ok_or(ModemError::TimeParseFailed)
+    }
 }
 
 /// A [`Bg9xModem`] plus a URC subscription, unlocking the MQTT methods.
@@ -634,6 +652,35 @@ impl<'sub, C: AtatClient, const URC_CAPACITY: usize, const URC_SUBSCRIBERS: usiz
             Urc::MqttDisconnect(r) if r.tcpconnect_id == tcp_connect_id => Some(match r.result {
                 0 => Ok(()),
                 code => Err(ModemError::MqttRequestFailed(code)),
+            }),
+            _ => None,
+        })
+        .await
+    }
+
+    /// Synchronizes local time with an NTP server (`AT+QNTP`) and returns
+    /// the result as a Unix timestamp. `context_id` must already be an
+    /// active PDP context (see [`Bg9xModem::activate_context`]).
+    pub async fn ntp_sync(
+        &mut self,
+        context_id: u8,
+        server: &str,
+        timeout: Duration,
+    ) -> Result<i64, ModemError> {
+        let deadline = Instant::now() + timeout;
+
+        self.base
+            .client
+            .send(&GetNetworkNtpTime {
+                context_id,
+                server: String::try_from(server).map_err(|_| ModemError::ArgumentTooLong)?,
+            })
+            .await?;
+
+        self.wait_urc(deadline, |urc| match urc {
+            Urc::NtpTime(r) => Some(match r.err {
+                0 => parse_timestamp(r.time.as_str()).ok_or(ModemError::TimeParseFailed),
+                code => Err(ModemError::NtpRequestFailed(code)),
             }),
             _ => None,
         })
