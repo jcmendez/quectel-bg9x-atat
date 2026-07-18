@@ -1,6 +1,6 @@
 [package]
 name = "quectel-bg9x-atat"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Async, no_std atat driver for Quectel BG9x (BG95/BG96) cellular modems"
