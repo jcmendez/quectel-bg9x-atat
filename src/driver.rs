@@ -36,11 +36,6 @@ pub enum ModemError {
     /// A PDP context operation failed.
     NoContext,
     /// Waited past the caller-supplied deadline.
-    ///
-    /// From [`MqttModem::ntp_sync`] specifically, this can also mean the sync
-    /// actually failed on the modem side but never surfaced as
-    /// [`Self::NtpRequestFailed`] — see the UNVERIFIED note on
-    /// [`crate::commands::responses::NtpTimeResponse`].
     OperationTimeout,
     /// A string argument didn't fit the command's fixed-capacity buffer.
     ArgumentTooLong,
@@ -421,7 +416,6 @@ impl<C: AtatClient> Bg9xModem<C> {
     ) -> Result<(), ModemError> {
         self.client
             .send(&ConfigureBands {
-                param: String::try_from("band").unwrap(),
                 gsm_band_mask: Bytes::try_from(gsm_mask.as_bytes())
                     .map_err(|_| ModemError::ArgumentTooLong)?,
                 emtc_band_mask: Bytes::try_from(emtc_mask.as_bytes())
@@ -445,7 +439,6 @@ impl<C: AtatClient> Bg9xModem<C> {
             build_rat_search_order(order).map_err(|_| ModemError::InvalidRatOrder)?;
         self.client
             .send(&ConfigureRatSearchingSequence {
-                param: String::try_from("nwscanseq").unwrap(),
                 rat_searching_sequence,
                 effect,
             })
@@ -461,7 +454,6 @@ impl<C: AtatClient> Bg9xModem<C> {
     ) -> Result<(), ModemError> {
         self.client
             .send(&ConfigureRatSearchingMode {
-                param: String::try_from("nwscanmode").unwrap(),
                 rat_searching_mode: mode,
                 effect,
             })
@@ -478,7 +470,6 @@ impl<C: AtatClient> Bg9xModem<C> {
     ) -> Result<(), ModemError> {
         self.client
             .send(&ConfigureServiceDomain {
-                param: String::try_from("servicedomain").unwrap(),
                 service_domain: domain,
                 effect,
             })
@@ -494,11 +485,7 @@ impl<C: AtatClient> Bg9xModem<C> {
         effect: ConfigurationEffect,
     ) -> Result<(), ModemError> {
         self.client
-            .send(&ConfigureIotOpMode {
-                param: String::try_from("iotopmode").unwrap(),
-                mode,
-                effect,
-            })
+            .send(&ConfigureIotOpMode { mode, effect })
             .await?;
         Ok(())
     }
@@ -826,13 +813,10 @@ impl<'sub, C: AtatClient, const URC_CAPACITY: usize, const URC_SUBSCRIBERS: usiz
             .await?;
 
         self.wait_urc(deadline, |urc| match urc {
-            // If this arm never seems to run on a real failing sync (always
-            // OperationTimeout instead), see the UNVERIFIED note on
-            // NtpTimeResponse — the modem may omit `<time>` on error, which
-            // would stop the URC from parsing into `Urc::NtpTime` at all.
-            Urc::NtpTime(r) => Some(match r.err {
-                0 => parse_timestamp_or_err(r.time.as_str()),
-                code => Err(ModemError::NtpRequestFailed(code)),
+            Urc::NtpTime(r) => Some(match (r.err, &r.time) {
+                (0, Some(time)) => parse_timestamp_or_err(time.as_str()),
+                (0, None) => Err(ModemError::TimeParseFailed),
+                (code, _) => Err(ModemError::NtpRequestFailed(code)),
             }),
             _ => None,
         })

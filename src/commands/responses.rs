@@ -166,25 +166,21 @@ pub struct NitzTimeResponse {
 /// manual for the code table). `time`: `"yy/MM/dd,hh:mm:ss±zz"`, only
 /// meaningful when `err == 0`.
 ///
-/// UNVERIFIED: `time` is modeled here as always present, but nothing in this
-/// crate has confirmed against real hardware (or the manual) whether the
-/// module actually sends a `<time>` field on failure, or omits it — the way
-/// `MqttPublishResponse::value` is genuinely optional for a documented
-/// `[,<value>]` field elsewhere in this file. If `<time>` is in fact omitted
-/// on error, `atat`'s positional parser will fail to match this struct at
-/// all for a failing sync, `Urc::NtpTime` never gets constructed, and
-/// [`crate::driver::MqttModem::ntp_sync`] will incorrectly return
-/// [`crate::driver::ModemError::OperationTimeout`] instead of the real
-/// [`crate::driver::ModemError::NtpRequestFailed`] — i.e. every failed NTP
-/// sync would misreport as a timeout. If you're debugging exactly that
-/// symptom (`ntp_sync` always times out, never returns `NtpRequestFailed`),
-/// this is the first thing to check against real hardware/firmware behavior.
+/// `time` is modeled as `Option` because it's unconfirmed against real
+/// hardware (or the manual) whether the module omits the `<time>` field on a
+/// failed sync — same rationale as `MqttPublishResponse::value` for its
+/// documented `[,<value>]` field elsewhere in this file. Modeling it as
+/// `Option` means the URC parses correctly either way, so
+/// [`crate::driver::MqttModem::ntp_sync`] can distinguish a real
+/// [`crate::driver::ModemError::NtpRequestFailed`] from a genuine
+/// [`crate::driver::ModemError::OperationTimeout`] regardless of which
+/// behavior the modem actually exhibits.
 #[derive(Clone, Debug, AtatResp)]
 pub struct NtpTimeResponse {
     #[at_arg(position = 1)]
     pub err: u8,
     #[at_arg(position = 2)]
-    pub time: String<32>,
+    pub time: Option<String<32>>,
 }
 
 /// Final result code indicating a mobile-equipment/network error
