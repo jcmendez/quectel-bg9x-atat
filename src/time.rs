@@ -54,17 +54,29 @@ pub(crate) fn parse_timestamp(s: &str) -> Option<i64> {
     }
     let _tz_quarter_hours = two_digits(b, 18)?;
 
-    if !(1..=12).contains(&month)
-        || !(1..=31).contains(&day)
-        || hour > 23
-        || minute > 59
-        || second > 59
-    {
+    if !(1..=12).contains(&month) || hour > 23 || minute > 59 || second > 59 {
         return None;
     }
 
-    let days = days_from_civil(2000 + yy as i32, month as u32, day as u32);
+    let year = 2000 + yy as i32;
+    if day < 1 || day > days_in_month(year, month) {
+        return None;
+    }
+
+    let days = days_from_civil(year, month as u32, day as u32);
     Some(days * 86_400 + hour as i64 * 3600 + minute as i64 * 60 + second as i64)
+}
+
+/// Number of days in `month` (1-12) of `year`, so [`parse_timestamp`] can
+/// reject e.g. day 31 of a 30-day month or Feb 29 in a non-leap year instead
+/// of letting [`days_from_civil`] silently roll it into the following month.
+fn days_in_month(year: i32, month: u8) -> u8 {
+    match month {
+        4 | 6 | 9 | 11 => 30,
+        2 if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) => 29,
+        2 => 28,
+        _ => 31,
+    }
 }
 
 /// Reads a two-ASCII-digit number at `b[at..at + 2]`.
@@ -135,5 +147,13 @@ mod tests {
         assert_eq!(parse_timestamp("25/13/11,19:39:05+00"), None); // month out of range
         assert_eq!(parse_timestamp("25/11/32,19:39:05+00"), None); // day out of range
         assert_eq!(parse_timestamp("25/11/11,25:39:05+00"), None); // hour out of range
+    }
+
+    #[test]
+    fn rejects_day_invalid_for_month() {
+        assert_eq!(parse_timestamp("25/04/31,00:00:00+00"), None); // April has 30 days
+        assert_eq!(parse_timestamp("25/02/29,00:00:00+00"), None); // 2025 isn't a leap year
+        assert_eq!(parse_timestamp("25/02/30,00:00:00+00"), None);
+        assert_eq!(parse_timestamp("00/02/29,00:00:00+00"), Some(951_782_400)); // 2000 is a leap year
     }
 }

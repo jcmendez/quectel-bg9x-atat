@@ -12,9 +12,9 @@ use embassy_time::{with_timeout, Duration, Instant, Timer};
 
 use crate::commands::responses::{GetSignalStrengthResponse, NetworkInfo, PDPContextInfo};
 use crate::commands::types::{
-    EchoOn, FunctionalityLevelOfUE, MqttSslEnable, PowerDownMode, SslAuthenticationMode,
-    SslCheckHostEnable, SslCipherSuiteEnum, SslCipherSuites, SslIgnoreLocalTime, SslSniEnable,
-    SslVersion,
+    EchoOn, FunctionalityLevelOfUE, MqttSslEnable, NitzTimeQueryMode, PowerDownMode,
+    SslAuthenticationMode, SslCheckHostEnable, SslCipherSuiteEnum, SslCipherSuites,
+    SslIgnoreLocalTime, SslSniEnable, SslVersion,
 };
 use crate::commands::urc::Urc;
 use crate::commands::*;
@@ -34,6 +34,11 @@ pub enum ModemError {
     /// A PDP context operation failed.
     NoContext,
     /// Waited past the caller-supplied deadline.
+    ///
+    /// From [`MqttModem::ntp_sync`] specifically, this can also mean the sync
+    /// actually failed on the modem side but never surfaced as
+    /// [`Self::NtpRequestFailed`] — see the UNVERIFIED note on
+    /// [`crate::commands::responses::NtpTimeResponse`].
     OperationTimeout,
     /// A string argument didn't fit the command's fixed-capacity buffer.
     ArgumentTooLong,
@@ -445,15 +450,24 @@ impl<C: AtatClient> Bg9xModem<C> {
     }
 
     /// Queries the latest time synchronized through the network
-    /// (`AT+QLTS`), returning a Unix timestamp. `mode` 0: latest synced
-    /// time. 1: current GMT time. 2: current local time (adds the network's
-    /// timezone offset to the wall-clock fields, so parsing it the same way
-    /// as `mode` 1 doesn't put it back into a true GMT timestamp — prefer
-    /// mode 1 unless the local time is what's actually wanted).
-    pub async fn get_nitz_time(&mut self, mode: u8) -> Result<i64, ModemError> {
+    /// (`AT+QLTS`), returning a Unix timestamp.
+    ///
+    /// [`NitzTimeQueryMode::CurrentLocalTime`] adds the network's timezone
+    /// offset to the wall-clock fields, so parsing it the same way as
+    /// [`NitzTimeQueryMode::CurrentGmtTime`] doesn't put it back into a true
+    /// GMT timestamp — prefer `CurrentGmtTime` unless the local time is what's
+    /// actually wanted.
+    pub async fn get_nitz_time(&mut self, mode: NitzTimeQueryMode) -> Result<i64, ModemError> {
         let response = self.client.send(&GetNetworkNitzTime { mode }).await?;
-        parse_timestamp(response.time_and_dst.as_str()).ok_or(ModemError::TimeParseFailed)
+        parse_timestamp_or_err(response.time_and_dst.as_str())
     }
+}
+
+/// Parses a `+QLTS`/`+QNTP` timestamp string, mapping a parse failure to
+/// [`ModemError::TimeParseFailed`]. Shared by [`Bg9xModem::get_nitz_time`]
+/// and [`MqttModem::ntp_sync`].
+fn parse_timestamp_or_err(s: &str) -> Result<i64, ModemError> {
+    parse_timestamp(s).ok_or(ModemError::TimeParseFailed)
 }
 
 /// A [`Bg9xModem`] plus a URC subscription, unlocking the MQTT methods.
@@ -513,6 +527,21 @@ impl<'sub, C: AtatClient, const URC_CAPACITY: usize, const URC_SUBSCRIBERS: usiz
                 return result;
             }
         }
+    }
+
+    /// Discards any URCs already sitting in the subscription queue.
+    ///
+    /// `wait_urc` never drains on timeout, so a URC that arrives just after
+    /// one call's deadline is left queued for whichever call reads next.
+    /// That's harmless for the MQTT flows below, which key their matcher on
+    /// `tcpconnect_id` and simply ignore anything that doesn't match — but
+    /// [`MqttModem::ntp_sync`]'s `+QNTP` URC carries no such correlation id,
+    /// so a stale one from a previous timed-out `ntp_sync` call would
+    /// otherwise be silently accepted as the result of a later, unrelated
+    /// call. Call this right before issuing a fresh request that has no way
+    /// to tell its own URC apart from a stale one.
+    fn drain_stale_urcs(&mut self) {
+        while self.urc_sub.try_next_message_pure().is_some() {}
     }
 
     /// Opens an MQTT network socket, optionally over SSL/TLS, and connects
@@ -661,6 +690,11 @@ impl<'sub, C: AtatClient, const URC_CAPACITY: usize, const URC_SUBSCRIBERS: usiz
     /// Synchronizes local time with an NTP server (`AT+QNTP`) and returns
     /// the result as a Unix timestamp. `context_id` must already be an
     /// active PDP context (see [`Bg9xModem::activate_context`]).
+    ///
+    /// The `+QNTP` URC carries no id to correlate it with this specific
+    /// call, so [`Self::drain_stale_urcs`] is used to clear out anything
+    /// left over from an earlier timed-out `ntp_sync` before issuing a new
+    /// request — see that method's doc comment for why.
     pub async fn ntp_sync(
         &mut self,
         context_id: u8,
@@ -668,6 +702,8 @@ impl<'sub, C: AtatClient, const URC_CAPACITY: usize, const URC_SUBSCRIBERS: usiz
         timeout: Duration,
     ) -> Result<i64, ModemError> {
         let deadline = Instant::now() + timeout;
+
+        self.drain_stale_urcs();
 
         self.base
             .client
@@ -678,8 +714,12 @@ impl<'sub, C: AtatClient, const URC_CAPACITY: usize, const URC_SUBSCRIBERS: usiz
             .await?;
 
         self.wait_urc(deadline, |urc| match urc {
+            // If this arm never seems to run on a real failing sync (always
+            // OperationTimeout instead), see the UNVERIFIED note on
+            // NtpTimeResponse — the modem may omit `<time>` on error, which
+            // would stop the URC from parsing into `Urc::NtpTime` at all.
             Urc::NtpTime(r) => Some(match r.err {
-                0 => parse_timestamp(r.time.as_str()).ok_or(ModemError::TimeParseFailed),
+                0 => parse_timestamp_or_err(r.time.as_str()),
                 code => Err(ModemError::NtpRequestFailed(code)),
             }),
             _ => None,

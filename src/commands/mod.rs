@@ -136,11 +136,8 @@ pub struct DeactivatePDPContext {
 #[derive(Clone, AtatCmd)]
 #[at_cmd("+QLTS", NitzTimeResponse, timeout_ms = 300)]
 pub struct GetNetworkNitzTime {
-    /// 0: latest time synced through the network. 1: current GMT time
-    /// calculated from that synced time. 2: current local time calculated
-    /// from that synced time.
     #[at_arg(position = 1)]
-    pub mode: u8,
+    pub mode: NitzTimeQueryMode,
 }
 
 /// `AT+QNTP` — synchronizes local time with an NTP server. Requires an

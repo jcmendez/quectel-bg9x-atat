@@ -37,6 +37,18 @@ pub enum PowerDownMode {
     Normal = 1,
 }
 
+/// Which time value to return (`AT+QLTS`).
+#[derive(Debug, Clone, Copy, PartialEq, AtatEnum)]
+#[repr(u8)]
+pub enum NitzTimeQueryMode {
+    /// Latest time synced through the network
+    LatestSyncedTime = 0,
+    /// Current GMT time calculated from that synced time
+    CurrentGmtTime = 1,
+    /// Current local time calculated from that synced time
+    CurrentLocalTime = 2,
+}
+
 /// MQTT protocol version (`AT+QMTCFG="version"`).
 #[derive(Copy, Clone, Debug, PartialEq, AtatEnum)]
 #[repr(u8)]
