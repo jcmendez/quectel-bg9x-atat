@@ -7,12 +7,14 @@
 
 use atat::asynch::AtatClient;
 use atat::heapless::String;
+use atat::heapless_bytes::Bytes;
 use atat::UrcSubscription;
 use embassy_time::{with_timeout, Duration, Instant, Timer};
 
 use crate::commands::responses::{GetSignalStrengthResponse, NetworkInfo, PDPContextInfo};
 use crate::commands::types::{
-    EchoOn, FunctionalityLevelOfUE, MqttSslEnable, NitzTimeQueryMode, PowerDownMode,
+    build_rat_search_order, ConfigurationEffect, EchoOn, FunctionalityLevelOfUE, IotOperationMode,
+    MqttSslEnable, NitzTimeQueryMode, PowerDownMode, RatSearchingMode, SearchRat, ServiceDomain,
     SslAuthenticationMode, SslCheckHostEnable, SslCipherSuiteEnum, SslCipherSuites,
     SslIgnoreLocalTime, SslSniEnable, SslVersion,
 };
@@ -55,6 +57,9 @@ pub enum ModemError {
     /// A `+QLTS`/`+QNTP` timestamp string didn't match the expected
     /// `"yy/MM/dd,hh:mm:ss±zz"` layout.
     TimeParseFailed,
+    /// [`Bg9xModem::configure_rat_search_order`]'s RAT list was empty, had
+    /// more than 3 entries, or contained a duplicate.
+    InvalidRatOrder,
 }
 
 impl From<atat::Error> for ModemError {
@@ -401,6 +406,113 @@ impl<C: AtatClient> Bg9xModem<C> {
                 mode: PowerDownMode::Normal,
             })
             .await?;
+        Ok(())
+    }
+
+    /// `AT+QCFG="band"` — narrows the search to the given GSM/eMTC/NB-IoT
+    /// band bitmasks, each a hex string from the Quectel AT command manual's
+    /// per-variant band table (BG95 vs BG96 differ) — compute them yourself.
+    pub async fn configure_bands(
+        &mut self,
+        gsm_mask: &str,
+        emtc_mask: &str,
+        nbiot_mask: &str,
+        effect: ConfigurationEffect,
+    ) -> Result<(), ModemError> {
+        self.client
+            .send(&ConfigureBands {
+                param: String::try_from("band").unwrap(),
+                gsm_band_mask: Bytes::try_from(gsm_mask.as_bytes())
+                    .map_err(|_| ModemError::ArgumentTooLong)?,
+                emtc_band_mask: Bytes::try_from(emtc_mask.as_bytes())
+                    .map_err(|_| ModemError::ArgumentTooLong)?,
+                nbiot_band_mask: Bytes::try_from(nbiot_mask.as_bytes())
+                    .map_err(|_| ModemError::ArgumentTooLong)?,
+                effect,
+            })
+            .await?;
+        Ok(())
+    }
+
+    /// `AT+QCFG="nwscanseq"` — configures the RAT searching order from 1-3
+    /// distinct RATs, e.g. `&[SearchRat::Emtc, SearchRat::NbIot]`.
+    pub async fn configure_rat_search_order(
+        &mut self,
+        order: &[SearchRat],
+        effect: ConfigurationEffect,
+    ) -> Result<(), ModemError> {
+        let rat_searching_sequence =
+            build_rat_search_order(order).map_err(|_| ModemError::InvalidRatOrder)?;
+        self.client
+            .send(&ConfigureRatSearchingSequence {
+                param: String::try_from("nwscanseq").unwrap(),
+                rat_searching_sequence,
+                effect,
+            })
+            .await?;
+        Ok(())
+    }
+
+    /// `AT+QCFG="nwscanmode"` — configures the RAT searching mode.
+    pub async fn configure_rat_search_mode(
+        &mut self,
+        mode: RatSearchingMode,
+        effect: ConfigurationEffect,
+    ) -> Result<(), ModemError> {
+        self.client
+            .send(&ConfigureRatSearchingMode {
+                param: String::try_from("nwscanmode").unwrap(),
+                rat_searching_mode: mode,
+                effect,
+            })
+            .await?;
+        Ok(())
+    }
+
+    /// `AT+QCFG="servicedomain"` — configures the service domain to register
+    /// on.
+    pub async fn configure_service_domain(
+        &mut self,
+        domain: ServiceDomain,
+        effect: ConfigurationEffect,
+    ) -> Result<(), ModemError> {
+        self.client
+            .send(&ConfigureServiceDomain {
+                param: String::try_from("servicedomain").unwrap(),
+                service_domain: domain,
+                effect,
+            })
+            .await?;
+        Ok(())
+    }
+
+    /// `AT+QCFG="iotopmode"` — configures the network category to search for
+    /// under LTE RAT.
+    pub async fn configure_iot_op_mode(
+        &mut self,
+        mode: IotOperationMode,
+        effect: ConfigurationEffect,
+    ) -> Result<(), ModemError> {
+        self.client
+            .send(&ConfigureIotOpMode {
+                param: String::try_from("iotopmode").unwrap(),
+                mode,
+                effect,
+            })
+            .await?;
+        Ok(())
+    }
+
+    /// Resets the modem to factory defaults (`AT&F`), then restores the
+    /// factory NV configuration (`AT+QCFG="nvrestore",0`).
+    ///
+    /// **This erases the module's internal flash**, including any
+    /// certificates uploaded for SSL/TLS (see the UFS file-management
+    /// commands, not yet ported — issue #3). Not for routine use — reserve
+    /// it for provisioning/recovery flows.
+    pub async fn factory_reset(&mut self) -> Result<(), ModemError> {
+        self.client.send(&ResetToFactoryDefault).await?;
+        self.client.send(&RestoreFactoryConfiguration).await?;
         Ok(())
     }
 

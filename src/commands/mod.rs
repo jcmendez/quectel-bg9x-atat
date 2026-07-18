@@ -12,6 +12,7 @@ pub mod urc;
 
 use atat::atat_derive::AtatCmd;
 use atat::heapless::String;
+use atat::heapless_bytes::Bytes;
 
 use responses::*;
 use types::*;
@@ -20,6 +21,11 @@ use types::*;
 #[derive(Clone, AtatCmd)]
 #[at_cmd("", NoResponse, timeout_ms = 1000)]
 pub struct At;
+
+/// `AT&F` — resets all parameters to their factory default values.
+#[derive(Clone, AtatCmd)]
+#[at_cmd("&F", NoResponse, timeout_ms = 300)]
+pub struct ResetToFactoryDefault;
 
 /// `ATE` — configures whether the unit echoes characters received from the
 /// DTE in command mode.
@@ -159,6 +165,93 @@ pub struct PowerDown {
     #[at_arg(position = 1)]
     pub mode: PowerDownMode,
 }
+
+// --- Radio/network configuration ---
+//
+// All `AT+QCFG` commands here share the same shape: a literal subcommand
+// name, one or more values, and a trailing `ConfigurationEffect` (0: after
+// reboot, 1: immediately).
+
+/// `AT+QCFG="band"` — narrows the search to the given GSM/eMTC/NB-IoT band
+/// bitmasks. Masks are hex strings from the Quectel AT command manual's
+/// per-variant band tables (BG95 vs BG96 differ) — compute them yourself and
+/// pass the raw string; see [`crate::driver::Bg9xModem::configure_bands`].
+#[derive(Clone, AtatCmd)]
+#[at_cmd("+QCFG", NoResponse, timeout_ms = 300)]
+pub struct ConfigureBands {
+    /// Literal `"band"`.
+    #[at_arg(position = 0)]
+    pub param: String<16>,
+    #[at_arg(position = 1)]
+    pub gsm_band_mask: Bytes<24>,
+    #[at_arg(position = 2)]
+    pub emtc_band_mask: Bytes<24>,
+    #[at_arg(position = 3)]
+    pub nbiot_band_mask: Bytes<24>,
+    #[at_arg(position = 4)]
+    pub effect: ConfigurationEffect,
+}
+
+/// `AT+QCFG="nwscanseq"` — configures the RAT searching sequence, e.g.
+/// `"020301"` for eMTC -> NB-IoT -> GSM, or `"00"` for automatic. Build the
+/// value with [`types::build_rat_search_order`].
+#[derive(Clone, AtatCmd)]
+#[at_cmd("+QCFG", NoResponse, timeout_ms = 300)]
+pub struct ConfigureRatSearchingSequence {
+    /// Literal `"nwscanseq"`.
+    #[at_arg(position = 0)]
+    pub param: String<16>,
+    #[at_arg(position = 1)]
+    pub rat_searching_sequence: Bytes<8>,
+    #[at_arg(position = 2)]
+    pub effect: ConfigurationEffect,
+}
+
+/// `AT+QCFG="nwscanmode"` — configures the RAT searching mode.
+#[derive(Clone, AtatCmd)]
+#[at_cmd("+QCFG", NoResponse, timeout_ms = 300)]
+pub struct ConfigureRatSearchingMode {
+    /// Literal `"nwscanmode"`.
+    #[at_arg(position = 0)]
+    pub param: String<16>,
+    #[at_arg(position = 1)]
+    pub rat_searching_mode: RatSearchingMode,
+    #[at_arg(position = 2)]
+    pub effect: ConfigurationEffect,
+}
+
+/// `AT+QCFG="servicedomain"` — configures the service domain to register on.
+#[derive(Clone, AtatCmd)]
+#[at_cmd("+QCFG", NoResponse, timeout_ms = 300)]
+pub struct ConfigureServiceDomain {
+    /// Literal `"servicedomain"`.
+    #[at_arg(position = 0)]
+    pub param: String<16>,
+    #[at_arg(position = 1)]
+    pub service_domain: ServiceDomain,
+    #[at_arg(position = 2)]
+    pub effect: ConfigurationEffect,
+}
+
+/// `AT+QCFG="iotopmode"` — configures the network category to search for
+/// under LTE RAT.
+#[derive(Clone, AtatCmd)]
+#[at_cmd("+QCFG", NoResponse, timeout_ms = 300)]
+pub struct ConfigureIotOpMode {
+    /// Literal `"iotopmode"`.
+    #[at_arg(position = 0)]
+    pub param: String<16>,
+    #[at_arg(position = 1)]
+    pub mode: IotOperationMode,
+    #[at_arg(position = 2)]
+    pub effect: ConfigurationEffect,
+}
+
+/// `AT+QCFG="nvrestore",0` — restores the factory NV configuration. Fixed
+/// command, no arguments.
+#[derive(Clone, AtatCmd)]
+#[at_cmd("+QCFG=\"nvrestore\",0", NoResponse, timeout_ms = 300)]
+pub struct RestoreFactoryConfiguration;
 
 // --- MQTT ---
 

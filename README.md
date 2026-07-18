@@ -11,9 +11,11 @@ firmware and hand over the client.
 
 Currently covers: identity (IMEI/ICCID/firmware version), SIM status,
 network registration (`AT+CEREG`/`AT+CGREG`/`AT+QNWINFO`), signal strength,
-PDP context setup/activation, MQTT (with optional SSL/TLS), and SSL/TLS
-context configuration. GNSS and internal-flash file management from the
-reference implementation are not yet ported — see `NOTICE.md`.
+PDP context setup/activation, radio/network configuration (RAT search
+order/mode, service domain, IoT operation mode, band masks, factory
+reset), MQTT (with optional SSL/TLS), and SSL/TLS context configuration.
+GNSS and internal-flash file management from the reference implementation
+are not yet ported — see `NOTICE.md`.
 
 ## Usage
 

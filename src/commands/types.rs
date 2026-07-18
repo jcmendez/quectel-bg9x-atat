@@ -119,6 +119,89 @@ pub enum SslCheckHostEnable {
     Enable = 1,
 }
 
+/// When an `AT+QCFG` radio-configuration change takes effect.
+#[derive(Copy, Clone, Debug, PartialEq, AtatEnum)]
+#[repr(u8)]
+pub enum ConfigurationEffect {
+    /// Takes effect only after the next reboot.
+    AfterReboot = 0,
+    /// Takes effect immediately (and is saved).
+    Immediately = 1,
+}
+
+/// RAT search mode (`AT+QCFG="nwscanmode"`).
+#[derive(Copy, Clone, Debug, PartialEq, AtatEnum)]
+#[repr(u8)]
+pub enum RatSearchingMode {
+    /// GSM and LTE (default)
+    Automatic = 0,
+    GsmOnly = 1,
+    LteOnly = 3,
+}
+
+/// Service domain to register on (`AT+QCFG="servicedomain"`).
+#[derive(Copy, Clone, Debug, PartialEq, AtatEnum)]
+#[repr(u8)]
+pub enum ServiceDomain {
+    PsOnly = 1,
+    CsAndPs = 2,
+}
+
+/// Network category searched for under LTE RAT (`AT+QCFG="iotopmode"`).
+#[derive(Copy, Clone, Debug, PartialEq, AtatEnum)]
+#[repr(u8)]
+pub enum IotOperationMode {
+    Emtc = 0,
+    NbIot = 1,
+    EmtcAndNbIot = 2,
+}
+
+/// A radio access technology, for building the `AT+QCFG="nwscanseq"` search
+/// order with [`build_rat_search_order`].
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum SearchRat {
+    Gsm,
+    Emtc,
+    NbIot,
+}
+
+impl SearchRat {
+    fn code(self) -> &'static str {
+        match self {
+            SearchRat::Gsm => "01",
+            SearchRat::Emtc => "02",
+            SearchRat::NbIot => "03",
+        }
+    }
+}
+
+/// Raw `<scanseq>` argument for `ConfigureRatSearchingSequence`.
+pub type RatSearchOrder = Bytes<8>;
+
+/// [`build_rat_search_order`]'s RAT list was empty, had more than 3 entries,
+/// or contained a duplicate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidRatOrder;
+
+/// Builds the `<scanseq>` string for `AT+QCFG="nwscanseq"` from an ordered,
+/// duplicate-free list of 1-3 RATs, e.g. `[Emtc, NbIot, Gsm]` -> `"020301"`
+/// (eMTC, then NB-IoT, then GSM).
+pub fn build_rat_search_order(order: &[SearchRat]) -> Result<RatSearchOrder, InvalidRatOrder> {
+    if order.is_empty() || order.len() > 3 {
+        return Err(InvalidRatOrder);
+    }
+    let mut bytes = RatSearchOrder::new();
+    for (i, &rat) in order.iter().enumerate() {
+        if order[..i].contains(&rat) {
+            return Err(InvalidRatOrder);
+        }
+        for b in rat.code().bytes() {
+            bytes.push(b).map_err(|_| InvalidRatOrder)?;
+        }
+    }
+    Ok(bytes)
+}
+
 /// Raw hex-string cipher suite argument for `AT+QSSLCFG="ciphersuite"`, e.g.
 /// `"0xFFFF"`. Build one with [`SslCipherSuiteEnum::to_bytes`].
 pub type SslCipherSuites = Bytes<6>;
@@ -158,5 +241,52 @@ impl SslCipherSuiteEnum {
             let _ = bytes.push(HEX[nibble]);
         }
         bytes
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builds_rat_search_order() {
+        assert_eq!(
+            build_rat_search_order(&[SearchRat::Emtc, SearchRat::NbIot, SearchRat::Gsm])
+                .unwrap()
+                .as_slice(),
+            b"020301"
+        );
+        assert_eq!(
+            build_rat_search_order(&[SearchRat::Gsm])
+                .unwrap()
+                .as_slice(),
+            b"01"
+        );
+    }
+
+    #[test]
+    fn rejects_empty_order() {
+        assert_eq!(build_rat_search_order(&[]), Err(InvalidRatOrder));
+    }
+
+    #[test]
+    fn rejects_too_many_entries() {
+        assert_eq!(
+            build_rat_search_order(&[
+                SearchRat::Gsm,
+                SearchRat::Emtc,
+                SearchRat::NbIot,
+                SearchRat::Gsm
+            ]),
+            Err(InvalidRatOrder)
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_entries() {
+        assert_eq!(
+            build_rat_search_order(&[SearchRat::Gsm, SearchRat::Gsm]),
+            Err(InvalidRatOrder)
+        );
     }
 }
