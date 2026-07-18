@@ -64,17 +64,23 @@ modem.mqtt_disconnect(0, Duration::from_secs(10)).await?;
 ```
 
 `SslConfig` defaults to TLS 1.2, all cipher suites, server-only auth, no
-hostname check, and ignores certificate validity dates (no RTC/NTP time on
-the module by default). Client/CA certificates referenced by filename must
-already be present in the module's UFS file system — this crate doesn't
-handle uploading them yet.
+hostname check, and ignores certificate validity dates. Client/CA
+certificates referenced by filename must already be present in the module's
+UFS file system — get them there with `MqttModem::upload_file`, then sync a
+real clock with `Bg9xModem::get_nitz_time`/`MqttModem::ntp_sync` if you want
+`ignore_localtime: Care` (validity-date checking) instead of the default
+`Ignore`.
 
 ## Validated
 
-Exercised end-to-end on a Sixfab Pico LTE board (RP2040 + Quectel BG95-M3):
-SIM ready, ICCID/IMEI read, LTE-M (eMTC) registration, signal strength
-query, and PDP context activation with a real assigned IP against a live
-carrier SIM.
+Exercised end-to-end on a Sixfab Pico LTE board (RP2040 + Quectel BG95-M3)
+against a live carrier SIM: SIM ready, ICCID/IMEI read, LTE-M (eMTC)
+registration, signal strength query, PDP context activation with a real
+assigned IP, `AT+QNTP` time sync, uploading a CA cert + client cert/key to
+UFS, and a full mutual-TLS MQTT session against AWS IoT Core (connect,
+retained publishes, disconnect/reconnect recovery via `mqtt_close`) — see
+[CHANGELOG.md](CHANGELOG.md) for the specific issues that hardware run
+against real firmware surfaced and fixed.
 
 ## Attribution
 
