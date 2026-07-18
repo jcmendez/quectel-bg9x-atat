@@ -849,12 +849,12 @@ impl<'sub, C: AtatClient, const URC_CAPACITY: usize, const URC_SUBSCRIBERS: usiz
 
     /// Disconnects the MQTT client (`+QMTDISC`), waiting for its URC.
     ///
-    /// The reference implementation this was ported from also sends
-    /// `+QMTCLOSE` afterward, but only for a specific Quectel firmware
-    /// revision ("R200") — gated off by default. Left out here since it
-    /// isn't needed on a BG95-M3 and its URC never arrived when tried
-    /// unconditionally (see `NOTICE.md`'s reference project for that path
-    /// if a future modem/firmware combination needs it).
+    /// The reference implementation this was ported from also unconditionally
+    /// sends `+QMTCLOSE` right after this, but its URC never arrived when
+    /// tried that way on a BG95-M3 — for a normal graceful disconnect this
+    /// alone is sufficient. See [`Self::mqtt_close`] for the separate,
+    /// force-close use case (recovering a `tcp_connect_id` stuck "occupied"
+    /// from an earlier ungraceful restart) where it's actually needed.
     pub async fn mqtt_disconnect(
         &mut self,
         tcp_connect_id: u8,
@@ -868,6 +868,37 @@ impl<'sub, C: AtatClient, const URC_CAPACITY: usize, const URC_SUBSCRIBERS: usiz
             .await?;
         self.wait_urc(deadline, |urc| match urc {
             Urc::MqttDisconnect(r) if r.tcpconnect_id == tcp_connect_id => Some(match r.result {
+                0 => Ok(()),
+                code => Err(ModemError::MqttRequestFailed(code)),
+            }),
+            _ => None,
+        })
+        .await
+    }
+
+    /// Force-closes the underlying TCP socket for `tcp_connect_id`
+    /// (`+QMTCLOSE`), waiting for its URC. Unlike [`Self::mqtt_disconnect`]
+    /// (a graceful MQTT-level DISCONNECT, which needs a live MQTT session to
+    /// mean anything), this works regardless of MQTT-level state — including
+    /// clearing a `tcp_connect_id` a prior process left stuck "occupied"
+    /// (confirmed on hardware: `mqtt_connect`'s `AT+QMTOPEN` fails with
+    /// `MqttRequestFailed(2)` — "MQTT identifier is occupied" — if the
+    /// modem's own power survived an ungraceful restart, e.g. a reflash,
+    /// crash, or brownout, without this device ever calling
+    /// `mqtt_disconnect`/`mqtt_close` first). Callers doing exactly that
+    /// recovery should treat a failure here as non-fatal and attempt
+    /// `mqtt_connect` anyway — see that scenario's write-up in
+    /// `sixfabpico-embassy`.
+    pub async fn mqtt_close(
+        &mut self,
+        tcp_connect_id: u8,
+        timeout: Duration,
+    ) -> Result<(), ModemError> {
+        let deadline = Instant::now() + timeout;
+
+        self.base.client.send(&MqttClose { tcp_connect_id }).await?;
+        self.wait_urc(deadline, |urc| match urc {
+            Urc::MqttClose(r) if r.tcpconnect_id == tcp_connect_id => Some(match r.result {
                 0 => Ok(()),
                 code => Err(ModemError::MqttRequestFailed(code)),
             }),
